@@ -51,6 +51,14 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		map[string]any{"action": "sniff"},
 	}
 	ruleSets := []any{}
+	// ad/tracker block in every mode (before everything else)
+	if d.Cfg.BlockAds {
+		ruleSets = append(ruleSets,
+			map[string]any{"type": "local", "tag": "ads", "format": "binary",
+				"path": filepath.Join(RuleSetDir(workDir), "geosite-category-ads-all.srs")})
+		rules = append(rules,
+			map[string]any{"rule_set": []string{"ads"}, "outbound": "block"})
+	}
 	switch d.Cfg.Mode {
 	case "global-proxy":
 		// everything through proxy; keep only dns rule
@@ -62,6 +70,14 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 			ruleSets = append(ruleSets,
 				map[string]any{"type": "local", "tag": tag, "format": "binary",
 					"path": filepath.Join(RuleSetDir(workDir), tag+".srs")})
+		}
+		// GFW list first: blocked domains go proxy even if DNS returns a CN IP
+		if d.Cfg.GFWList {
+			ruleSets = append(ruleSets,
+				map[string]any{"type": "local", "tag": "gfwlist", "format": "source",
+					"path": filepath.Join(RuleSetDir(workDir), "gfwlist.json")})
+			rules = append(rules,
+				map[string]any{"rule_set": []string{"gfwlist"}, "outbound": "proxy"})
 		}
 		rules = append(rules,
 			map[string]any{"rule_set": []string{"geosite-cn"}, "outbound": "direct"},
@@ -84,13 +100,30 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		final = "direct"
 	}
 
+	// DNS split: CN domains -> local resolver (direct, fast);
+	// foreign domains -> clean resolver via proxy (no pollution).
+	// Node hostnames always resolve via local (no circular proxy dependency).
+	dnsServers := []any{
+		map[string]any{"tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct"},
+	}
+	dnsRules := []any{}
+	dnsFinal := "local"
+	if d.Cfg.Mode != "global-direct" {
+		dnsServers = append(dnsServers,
+			map[string]any{"tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy"})
+		dnsFinal = "remote"
+	}
+	if d.Cfg.Mode == "bypass-cn" {
+		dnsRules = append(dnsRules,
+			map[string]any{"action": "route", "server": "local", "rule_set": "geosite-cn"})
+	}
+
 	cfg := map[string]any{
 		"log": map[string]any{"level": "warn", "timestamp": true},
 		"dns": map[string]any{
-			"servers": []any{
-				map[string]any{"tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct"},
-			},
-			"final": "local",
+			"servers": dnsServers,
+			"rules":   dnsRules,
+			"final":   dnsFinal,
 		},
 		"inbounds": []any{
 			map[string]any{"type": "mixed", "tag": "mixed-in",

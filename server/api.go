@@ -308,9 +308,19 @@ func (s *Server) routes() {
 }
 
 func (s *Server) regen() error {
-	// bypass-cn mode needs local rule-sets; download via mirrors (no proxy needed)
+	// local rule-sets are downloaded by sbgui via mirrors (no proxy needed)
 	if s.store.Data.Cfg.Mode == "bypass-cn" {
 		if err := core.EnsureRuleSets(s.workDir); err != nil {
+			return err
+		}
+	}
+	if s.store.Data.Cfg.BlockAds {
+		if err := core.EnsureExtraRuleSets(s.workDir, []string{"geosite-category-ads-all"}); err != nil {
+			return err
+		}
+	}
+	if s.store.Data.Cfg.GFWList {
+		if err := core.EnsureGFWList(s.workDir); err != nil {
 			return err
 		}
 	}

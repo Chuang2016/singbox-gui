@@ -34,6 +34,8 @@ type Settings struct {
 	ClashPort    int          `json:"clash_port"`
 	ActiveNodeID string       `json:"active_node_id"` // node selected in "proxy" selector
 	AutoUpdateHr int          `json:"auto_update_hr"` // subscription refresh interval, 0 = off
+	BlockAds     bool         `json:"block_ads"`      // block ad/tracker domains
+	GFWList      bool         `json:"gfwlist"`        // extra gfwlist domain pack -> proxy
 }
 
 // StoreData is the persisted file shape.
@@ -51,5 +53,7 @@ func DefaultSettings() Settings {
 		ClashPort:    9090,
 		ActiveNodeID: "",
 		AutoUpdateHr: 24,
+		BlockAds:     true,
+		GFWList:      true,
 	}
 }

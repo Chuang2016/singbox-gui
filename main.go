@@ -1,10 +1,11 @@
-// sbgui: 轻量级 sing-box 图形管理工具.
-// 单二进制: 内嵌 Web 仪表盘, 管理 sing-box 子进程(配置文件自动生成),
-// 支持链接/订阅导入、规则分流、实时流量与连接管理.
+// sbgui: lightweight sing-box GUI manager.
+// Single binary: embedded web dashboard, manages a sing-box child process
+// (config auto-generated), with link/subscription import, rule-based routing,
+// realtime traffic and connection management.
 //
-// 用法: ./sbgui [-port 20123]
-// 首次运行请把对应平台的 sing-box 可执行文件放到 sbgui 同目录
-// (https://github.com/SagerNet/sing-box/releases, 需要 >= 1.10).
+// Usage: ./sbgui [-port 20123]
+// On first run, put the platform-matching sing-box executable next to sbgui
+// (https://github.com/SagerNet/sing-box/releases, >= 1.10 required).
 package main
 
 import (
@@ -39,7 +40,7 @@ func main() {
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	fmt.Printf("sbgui dashboard: http://%s\n", addr)
 	fmt.Printf("work dir: %s\n", workDir)
-	fmt.Println("把 sing-box 可执行文件放到 work dir(或 PATH)后, 点页面上的 启动 即可.")
+	fmt.Println("Put the sing-box executable in the work dir (or PATH), then press Start on the page.")
 
 	go func() {
 		if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
