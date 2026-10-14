@@ -47,9 +47,9 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 <div class="hint">Realtime up/down via the sing-box Clash API. Green dashed = download, blue = upload.</div></div>
 
 <div class="grid2">
-<div class="card"><h2>Nodes (click the dot to switch)</h2>
-<table id="nodes"><thead><tr><th></th><th>Name</th><th>Protocol</th><th>Source</th><th></th></tr></thead><tbody></tbody></table>
-<div class="hint">The proxy selector follows the node you pick; the auto group picks by latency.</div></div>
+<div class="card"><h2>Nodes (click the dot to switch) <button class="ghost" style="padding:4px 10px" onclick="checkDelays()">Check latency</button> <span id="delayMsg" class="hint"></span></h2>
+<table id="nodes"><thead><tr><th></th><th>Name</th><th>Protocol</th><th>Delay</th><th>Speed</th><th></th></tr></thead><tbody></tbody></table>
+<div class="hint">The proxy selector follows the node you pick; the auto group picks by latency. Latency = real request through the node (timeout = dead).</div></div>
 
 <div class="card"><h2>Import links</h2>
 <textarea id="links" placeholder="Paste ss:// vmess:// vless:// trojan:// hysteria2:// tuic:// links, one per line"></textarea>
@@ -117,8 +117,14 @@ async function refresh(){
   $('workDir').textContent=s.work_dir||'';
   $('rsInfo').textContent=Object.entries(s.rulesets||{}).map(([k,v])=>k+': '+v).join(' | ')||'no cached packs';
   ns.forEach(n=>{const tr=document.createElement('tr');
-   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono">${n.source}</td><td><button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
+   const d=n.delay_ms, dok=n.delay_ok;
+   const dTxt=(d===undefined||d===null)?'-':(dok?Math.round(d)+' ms':'timeout');
+   const dCol=!dok&&d!==undefined?'#f85149':(d<300?'#3fb950':(d<800?'#d29922':'#f85149'));
+   const sp=n.speed_mbps, spok=n.speed_ok;
+   const spTxt=(sp===undefined||sp===null)?'-':(spok?sp.toFixed(1)+' Mbps':'fail');
+   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono" style="color:${dCol}">${dTxt}</td><td class="mono">${spTxt}</td><td><button data-sp="${n.id}" style="padding:4px 8px" title="Download speed test (switches selector temporarily)">Speed</button> <button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
    tr.children[1].textContent=n.tag;tb.appendChild(tr);});
+  tb.querySelectorAll('[data-sp]').forEach(e=>e.onclick=()=>speedTest(e.dataset.sp));
   tb.querySelectorAll('.tag').forEach(e=>e.onclick=()=>select(e.dataset.id));
   tb.querySelectorAll('[data-del]').forEach(e=>e.onclick=async()=>{await api('/api/nodes/'+e.dataset.del,{method:'DELETE'});refresh();});
   const rs=$('rules').querySelector('tbody');rs.innerHTML='';
@@ -138,6 +144,16 @@ async function refreshSubs(){try{const ss=await api('/api/subs');const tb=$('sub
  tb.querySelectorAll('[data-d]').forEach(e=>e.onclick=async()=>{await api('/api/subs/'+e.dataset.d,{method:'DELETE'});refresh();refreshSubs();});
 }catch(e){}}
 async function select(id){try{await api('/api/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:id})});}catch(e){alert(e.message);}refresh();}
+async function checkDelays(){$('delayMsg').textContent='Testing...';
+ try{await api('/api/nodes/check-delay',{method:'POST'});$('delayMsg').textContent='Done.';}
+ catch(e){$('delayMsg').textContent=e.message;}
+ refresh();}
+async function speedTest(id){if(!confirm('Speed test will briefly switch the proxy to this node. Continue?'))return;
+ try{$('delayMsg').textContent='Speed testing...';
+ const r=await api('/api/nodes/'+id+'/speed',{method:'POST'});
+ $('delayMsg').textContent='Done: '+r.speed_mbps.toFixed(1)+' Mbps';}
+ catch(e){$('delayMsg').textContent='Speed test failed: '+e.message;}
+ refresh();}
 async function addRule(){const c=window._cfg||{};c.custom_rules=c.custom_rules||[];const v=$('rVal').value.trim();if(!v)return;
  c.custom_rules.push({kind:$('rKind').value,value:v,outbound:$('rOut').value});
  await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});$('rVal').value='';refresh();}

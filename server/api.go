@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Chuang2016/singbox-gui/core"
@@ -22,10 +23,15 @@ type Server struct {
 	mgr     *core.Manager
 	workDir string
 	mux     *http.ServeMux
+
+	healthMu sync.Mutex
+	delays   map[string]nodeHealth // nodeID -> delay
+	speeds   map[string]nodeHealth // nodeID -> speed
 }
 
 func New(store *core.Store, mgr *core.Manager, workDir string) *Server {
-	s := &Server{store: store, mgr: mgr, workDir: workDir, mux: http.NewServeMux()}
+	s := &Server{store: store, mgr: mgr, workDir: workDir, mux: http.NewServeMux(),
+		delays: map[string]nodeHealth{}, speeds: map[string]nodeHealth{}}
 	s.routes()
 	return s
 }
@@ -140,7 +146,26 @@ func (s *Server) routes() {
 	m.HandleFunc("/api/nodes", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET":
-			writeJSON(w, s.store.Data.Nodes)
+			s.healthMu.Lock()
+			out := make([]any, 0, len(s.store.Data.Nodes))
+			for _, n := range s.store.Data.Nodes {
+				m := map[string]any{
+					"id": n.ID, "tag": n.Tag, "protocol": n.Protocol, "source": n.Source,
+				}
+				if h, ok := s.delays[n.ID]; ok {
+					m["delay_ms"] = h.Value
+					m["delay_at"] = h.At
+					m["delay_ok"] = h.OK
+				}
+				if h, ok := s.speeds[n.ID]; ok {
+					m["speed_mbps"] = h.Value
+					m["speed_at"] = h.At
+					m["speed_ok"] = h.OK
+				}
+				out = append(out, m)
+			}
+			s.healthMu.Unlock()
+			writeJSON(w, out)
 		case "POST": // import links: {"text": "..."}
 			var req struct {
 				Text string `json:"text"`
@@ -176,8 +201,49 @@ func (s *Server) routes() {
 			w.WriteHeader(405)
 		}
 	})
+	// delay check for all nodes (via sing-box Clash API)
+	m.HandleFunc("/api/nodes/check-delay", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		if !s.mgr.Running() {
+			writeErr(w, fmt.Errorf("sing-box is not running"))
+			return
+		}
+		results := s.checkAllDelays()
+		now := time.Now().Format("15:04:05")
+		s.healthMu.Lock()
+		for id, d := range results {
+			s.delays[id] = nodeHealth{Value: float64(d), At: now, OK: d >= 0}
+		}
+		s.healthMu.Unlock()
+		writeJSON(w, map[string]any{"delays": results, "at": now})
+	})
+
+	// speed test for one node: /api/nodes/{id}/speed
 	m.HandleFunc("/api/nodes/", func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+		rest := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) == 2 && parts[1] == "speed" && r.Method == "POST" {
+			mbps, err := s.speedTest(parts[0])
+			now := time.Now().Format("15:04:05")
+			s.healthMu.Lock()
+			if err == nil {
+				s.speeds[parts[0]] = nodeHealth{Value: mbps, At: now, OK: true}
+			} else {
+				s.speeds[parts[0]] = nodeHealth{Value: 0, At: now, OK: false}
+			}
+			s.healthMu.Unlock()
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			writeJSON(w, map[string]any{"speed_mbps": mbps, "at": now})
+			return
+		}
+		// fall through to the existing DELETE handler below
+		id := rest
 		if r.Method != "DELETE" {
 			w.WriteHeader(405)
 			return
