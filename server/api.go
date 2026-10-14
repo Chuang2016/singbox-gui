@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -54,10 +56,42 @@ func (s *Server) routes() {
 
 	m.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
-			"running": s.mgr.Running(),
-			"nodes":   len(s.store.Data.Nodes),
-			"logs":    s.mgr.Logs(),
+			"running":  s.mgr.Running(),
+			"nodes":    len(s.store.Data.Nodes),
+			"logs":     s.mgr.Logs(),
+			"work_dir": s.workDir,
+			"rulesets": core.RuleSetInfo(s.workDir),
 		})
+	})
+
+	// quit sbgui (stop sing-box child first)
+	m.HandleFunc("/api/quit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			_ = s.mgr.Stop()
+			os.Exit(0)
+		}()
+		writeJSON(w, map[string]string{"ok": "bye"})
+	})
+
+	// force re-download rule-set packs (bypass 7-day cache), then rebuild config
+	m.HandleFunc("/api/rulesets/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		for _, f := range []string{"geosite-cn.srs", "geoip-cn.srs", "geosite-category-ads-all.srs", "gfwlist.json"} {
+			_ = os.Remove(filepath.Join(core.RuleSetDir(s.workDir), f))
+		}
+		if err := s.regen(); err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": "refreshed", "rulesets": core.RuleSetInfo(s.workDir)})
 	})
 	m.HandleFunc("/api/start", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {

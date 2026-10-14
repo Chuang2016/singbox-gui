@@ -36,6 +36,11 @@ type Settings struct {
 	AutoUpdateHr int          `json:"auto_update_hr"` // subscription refresh interval, 0 = off
 	BlockAds     bool         `json:"block_ads"`      // block ad/tracker domains
 	GFWList      bool         `json:"gfwlist"`        // extra gfwlist domain pack -> proxy
+	// user-editable bulk lists (one entry per line), compiled to local rule-sets
+	UserDomains  string       `json:"user_domains"`
+	UserDomainOb string       `json:"user_domain_ob"` // outbound for user domains
+	UserIPs      string       `json:"user_ips"`
+	UserIPOb     string       `json:"user_ip_ob"` // outbound for user IPs
 }
 
 // StoreData is the persisted file shape.
@@ -55,5 +60,7 @@ func DefaultSettings() Settings {
 		AutoUpdateHr: 24,
 		BlockAds:     true,
 		GFWList:      true,
+		UserDomainOb: "proxy",
+		UserIPOb:     "proxy",
 	}
 }

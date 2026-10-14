@@ -51,7 +51,40 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		map[string]any{"action": "sniff"},
 	}
 	ruleSets := []any{}
-	// ad/tracker block in every mode (before everything else)
+	// user rules first: highest priority, override all built-in packs
+	if n, err := WriteUserList(workDir, "user-domains", "domain", d.Cfg.UserDomains); err == nil && n > 0 {
+		ob := d.Cfg.UserDomainOb
+		if ob == "" {
+			ob = "proxy"
+		}
+		ruleSets = append(ruleSets,
+			map[string]any{"type": "local", "tag": "user-domains", "format": "source",
+				"path": filepath.Join(RuleSetDir(workDir), "user-domains.json")})
+		rules = append(rules,
+			map[string]any{"rule_set": []string{"user-domains"}, "outbound": ob})
+	}
+	if n, err := WriteUserList(workDir, "user-ips", "ip", d.Cfg.UserIPs); err == nil && n > 0 {
+		ob := d.Cfg.UserIPOb
+		if ob == "" {
+			ob = "proxy"
+		}
+		ruleSets = append(ruleSets,
+			map[string]any{"type": "local", "tag": "user-ips", "format": "source",
+				"path": filepath.Join(RuleSetDir(workDir), "user-ips.json")})
+		rules = append(rules,
+			map[string]any{"rule_set": []string{"user-ips"}, "outbound": ob})
+	}
+	for _, r := range d.Cfg.CustomRules {
+		rule := map[string]any{"outbound": r.Outbound}
+		switch r.Kind {
+		case "ip":
+			rule["ip_cidr"] = []string{r.Value}
+		default:
+			rule["domain_suffix"] = []string{r.Value}
+		}
+		rules = append(rules, rule)
+	}
+	// ad/tracker block in every mode (after user rules)
 	if d.Cfg.BlockAds {
 		ruleSets = append(ruleSets,
 			map[string]any{"type": "local", "tag": "ads", "format": "binary",
@@ -83,17 +116,6 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 			map[string]any{"rule_set": []string{"geosite-cn"}, "outbound": "direct"},
 			map[string]any{"rule_set": []string{"geoip-cn"}, "outbound": "direct"},
 		)
-	}
-	// custom rules (before final)
-	for _, r := range d.Cfg.CustomRules {
-		rule := map[string]any{"outbound": r.Outbound}
-		switch r.Kind {
-		case "ip":
-			rule["ip_cidr"] = []string{r.Value}
-		default:
-			rule["domain_suffix"] = []string{r.Value}
-		}
-		rules = append(rules, rule)
 	}
 	final := "proxy"
 	if d.Cfg.Mode == "global-direct" {

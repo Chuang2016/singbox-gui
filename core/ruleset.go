@@ -283,3 +283,81 @@ func sortedKeys(m map[string]bool) []string {
 	sort.Strings(out)
 	return out
 }
+
+// WriteUserList compiles user-provided lines into a sing-box source rule-set.
+// kind is "domain" (domain_suffix match) or "ip" (ip_cidr match).
+func WriteUserList(workDir, name, kind, text string) (int, error) {
+	seen := map[string]bool{}
+	var items []string
+	for _, line := range strings.Split(text, "\n") {
+		l := strings.ToLower(strings.TrimSpace(line))
+		l = strings.TrimPrefix(l, "#")
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "#") || strings.HasPrefix(l, "//") {
+			continue
+		}
+		// strip scheme/path if user pasted URLs
+		if strings.Contains(l, "://") {
+			if i := strings.Index(l, "://"); i >= 0 {
+				l = l[i+3:]
+			}
+			if i := strings.IndexAny(l, "/?#"); i >= 0 {
+				l = l[:i]
+			}
+		}
+		if i := strings.Index(l, ":"); i >= 0 && kind == "domain" {
+			l = l[:i] // strip port
+		}
+		l = strings.Trim(l, ".")
+		if l == "" || seen[l] {
+			continue
+		}
+		seen[l] = true
+		items = append(items, l)
+	}
+	sort.Strings(items)
+	rule := map[string]any{}
+	if kind == "ip" {
+		rule["ip_cidr"] = items
+	} else {
+		rule["domain_suffix"] = items
+	}
+	doc := map[string]any{"version": 3, "rules": []any{rule}}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return 0, err
+	}
+	path := filepath.Join(RuleSetDir(workDir), name+".json")
+	if err := os.MkdirAll(RuleSetDir(workDir), 0755); err != nil {
+		return 0, err
+	}
+	if err := os.WriteFile(path+".tmp", raw, 0644); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		return 0, err
+	}
+	return len(items), nil
+}
+
+// RuleSetInfo reports cached rule-set files (name -> "size / updated ...").
+func RuleSetInfo(workDir string) map[string]string {
+	out := map[string]string{}
+	for _, f := range []string{"geosite-cn.srs", "geoip-cn.srs", "geosite-category-ads-all.srs", "gfwlist.json", "user-domains.json", "user-ips.json"} {
+		p := filepath.Join(RuleSetDir(workDir), f)
+		if st, err := os.Stat(p); err == nil {
+			out[f] = fmt.Sprintf("%s / %s", humanSize(st.Size()), st.ModTime().Format("2006-01-02 15:04"))
+		}
+	}
+	return out
+}
+
+func humanSize(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%dB", n)
+	}
+	if n < 1048576 {
+		return fmt.Sprintf("%.0fKB", float64(n)/1024)
+	}
+	return fmt.Sprintf("%.1fMB", float64(n)/1048576)
+}

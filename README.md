@@ -20,8 +20,12 @@ import links/subscriptions, rule-based routing, realtime traffic, connection man
 
 1. Download sing-box for your platform from [sing-box releases](https://github.com/SagerNet/sing-box/releases) (≥ 1.10, 1.14.x recommended) and extract `sing-box` (`sing-box.exe` on Windows)
 2. Put `sbgui` and `sing-box` in the **same folder**
-3. Run `sbgui`, open http://127.0.0.1:20123 in your browser
+3. Run `sbgui` (double-click on Windows — no console window; the dashboard opens in your browser automatically)
 4. Import links or add a subscription → click **Start** → **Enable system proxy**
+
+Desktop behavior: the dashboard is a page, but sbgui itself runs in the background —
+you can minimize or close the page and the proxy keeps working. Reopen http://127.0.0.1:20123
+anytime, or use the **Quit** button to exit completely. (Start with `-nobrowser` to skip auto-open.)
 
 Prebuilt binaries are in [Releases](../../releases) (`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64`).
 

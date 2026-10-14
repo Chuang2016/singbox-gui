@@ -37,6 +37,8 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 <button id="bRestart" onclick="ctl('restart')" class="ghost">Restart</button>
 <button id="bProxy" onclick="sysproxy(true)">Enable system proxy</button>
 <button id="bUnproxy" onclick="sysproxy(false)" class="ghost">Disable system proxy</button>
+<button onclick="if(confirm('Quit sbgui?'))fetch('/api/quit',{method:'POST'}).then(()=>{document.body.innerHTML='<p style=padding:40px>Bye.</p>';})" class="danger">Quit</button>
+<span class="hint" title="You can close or minimize this page — sbgui and sing-box keep running in the background. Reopen http://127.0.0.1:20123 anytime; use Quit to exit completely.">runs in background</span>
 <span style="flex:1"></span>
 <span class="traffic">↑ <span id="up">0</span> <small id="upU">B/s</small> &nbsp; ↓ <span id="down">0</span> <small id="downU">B/s</small></span>
 </header>
@@ -66,11 +68,21 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 <option value="global-direct">Global direct</option>
 </select><button onclick="saveSettings()">Save &amp; apply</button></div>
 <div class="row" style="margin-top:8px">
-<label><input type="checkbox" id="ckAds" style="width:auto"> Block ads/trackers</label>
-<label><input type="checkbox" id="ckGfw" style="width:auto"> GFW list (extra blocked domains via proxy)</label>
+<label><input type="checkbox" id="ckAds" style="width:auto" onchange="quickToggle()"> Block ads/trackers</label>
+<label><input type="checkbox" id="ckGfw" style="width:auto" onchange="quickToggle()"> GFW list (extra blocked domains via proxy)</label>
+<button class="ghost" onclick="refreshPacks()" style="padding:5px 10px">Update rule data</button>
+<span id="rsInfo" class="hint"></span>
 </div>
-<div class="hint">Built-in packs are downloaded automatically (CDN mirrors, refreshed weekly).<br>
+<div class="hint">Built-in packs download automatically to <span id="workDir" class="mono"></span>/ruleset/ (CDN mirrors, refreshed weekly).<br>
 DNS split: CN domains resolve via local DNS (fast); foreign domains via clean DNS through proxy (no pollution).</div>
+<div class="hint" style="margin-top:10px"><b style="color:#e6edf3">My lists</b> (one per line, highest priority — overrides built-in packs):</div>
+<div class="grid2" style="margin-top:6px">
+<div><div class="row"><b style="font-size:13px">Domains</b><select id="udOb"><option value="proxy">Proxy</option><option value="direct">Direct</option><option value="block">Block</option></select></div>
+<textarea id="udText" placeholder="example.com&#10;google.com" style="min-height:60px;margin-top:6px"></textarea></div>
+<div><div class="row"><b style="font-size:13px">IPs / CIDR</b><select id="uiOb"><option value="proxy">Proxy</option><option value="direct">Direct</option><option value="block">Block</option></select></div>
+<textarea id="uiText" placeholder="1.2.3.0/24&#10;8.8.8.8" style="min-height:60px;margin-top:6px"></textarea></div>
+</div>
+<div class="row" style="margin-top:8px"><button onclick="saveLists()">Save my lists &amp; apply</button><span id="listMsg" class="hint"></span></div>
 <div class="hint">Custom rules (higher priority than presets):</div>
 <table id="rules"><thead><tr><th>Type</th><th>Value</th><th>Via</th><th></th></tr></thead><tbody></tbody></table>
 <div class="row" style="margin-top:8px">
@@ -99,6 +111,11 @@ async function refresh(){
   const ns=await api('/api/nodes');const tb=$('nodes').querySelector('tbody');tb.innerHTML='';
   const st2=await api('/api/settings');$('mode').value=st2.mode||'bypass-cn';
   $('ckAds').checked=!!st2.block_ads;$('ckGfw').checked=!!st2.gfwlist;
+  if(document.activeElement!==$('udText'))$('udText').value=st2.user_domains||'';
+  if(document.activeElement!==$('uiText'))$('uiText').value=st2.user_ips||'';
+  $('udOb').value=st2.user_domain_ob||'proxy';$('uiOb').value=st2.user_ip_ob||'proxy';
+  $('workDir').textContent=s.work_dir||'';
+  $('rsInfo').textContent=Object.entries(s.rulesets||{}).map(([k,v])=>k+': '+v).join(' | ')||'no cached packs';
   ns.forEach(n=>{const tr=document.createElement('tr');
    tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono">${n.source}</td><td><button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
    tr.children[1].textContent=n.tag;tb.appendChild(tr);});
@@ -126,8 +143,24 @@ async function addRule(){const c=window._cfg||{};c.custom_rules=c.custom_rules||
  await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});$('rVal').value='';refresh();}
 async function saveSettings(){const c=window._cfg||{};c.mode=$('mode').value;
  c.block_ads=$('ckAds').checked;c.gfwlist=$('ckGfw').checked;
+ c.user_domains=$('udText').value;c.user_domain_ob=$('udOb').value;
+ c.user_ips=$('uiText').value;c.user_ip_ob=$('uiOb').value;
  await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
  if(confirm('Rules saved. Restart sing-box to apply?'))ctl('restart');}
+async function quickToggle(){const c=window._cfg||{};c.block_ads=$('ckAds').checked;c.gfwlist=$('ckGfw').checked;
+ try{await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});window._cfg=c;}
+ catch(e){alert('Save failed: '+e.message);refresh();}}
+async function saveLists(){const c=window._cfg||{};
+ c.user_domains=$('udText').value;c.user_domain_ob=$('udOb').value;
+ c.user_ips=$('uiText').value;c.user_ip_ob=$('uiOb').value;
+ try{await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});window._cfg=c;
+ $('listMsg').textContent='Saved.';}catch(e){$('listMsg').textContent=e.message;return;}
+ if(confirm('Lists saved. Restart sing-box to apply?'))ctl('restart');}
+async function refreshPacks(){$('rsInfo').textContent='Updating...';
+ try{const r=await api('/api/rulesets/refresh',{method:'POST'});
+ $('rsInfo').textContent=Object.entries(r.rulesets||{}).map(([k,v])=>k+': '+v).join(' | ');
+ if(confirm('Rule data updated. Restart sing-box to apply?'))ctl('restart');
+ }catch(e){$('rsInfo').textContent='Update failed: '+e.message;}}
 async function sysproxy(en){try{await api('/api/sysproxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:en})});alert(en?'System proxy enabled (127.0.0.1:2080)':'System proxy disabled');}catch(e){alert(e.message);}}
 async function loadConns(){try{const j=await api('/api/clash/connections');const tb=$('conns').querySelector('tbody');tb.innerHTML='';
  (j.connections||[]).slice(-30).reverse().forEach(c=>{const tr=document.createElement('tr');

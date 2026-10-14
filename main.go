@@ -11,17 +11,36 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/Chuang2016/singbox-gui/core"
 	"github.com/Chuang2016/singbox-gui/server"
 )
 
+// openBrowser launches the dashboard URL in the default browser.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
 func main() {
 	port := flag.Int("port", 20123, "dashboard port")
+	nobrowser := flag.Bool("nobrowser", false, "do not auto-open the dashboard in browser")
 	flag.Parse()
 
 	workDir := core.WorkDir()
@@ -29,7 +48,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "workdir:", err)
 		os.Exit(1)
 	}
-	store, err := core.OpenStore()
+	store, err := core.OpenStore(workDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "store:", err)
 		os.Exit(1)
@@ -48,6 +67,21 @@ func main() {
 			os.Exit(1)
 		}
 	}()
+
+	// desktop-app feel: open the dashboard automatically once it is up
+	if !*nobrowser {
+		go func() {
+			url := "http://" + addr
+			for i := 0; i < 50; i++ {
+				time.Sleep(100 * time.Millisecond)
+				if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
+					c.Close()
+					break
+				}
+			}
+			openBrowser(url)
+		}()
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

@@ -46,12 +46,18 @@ func WorkDir() string {
 	return configDir()
 }
 
-func OpenStore() (*Store, error) {
-	dir := configDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
+func OpenStore(workDir string) (*Store, error) {
+	if err := os.MkdirAll(workDir, 0700); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dir, "store.json")}
+	// migrate from the pre-v1.0.3 location (%APPDATA%/sbgui) if needed
+	newPath := filepath.Join(workDir, "store.json")
+	if _, err := os.Stat(newPath); os.IsNotExist(err) {
+		if oldRaw, err := os.ReadFile(filepath.Join(configDir(), "store.json")); err == nil {
+			_ = os.WriteFile(newPath, oldRaw, 0600)
+		}
+	}
+	s := &Store{path: newPath}
 	s.Data.Cfg = DefaultSettings()
 	if raw, err := os.ReadFile(s.path); err == nil {
 		var d StoreData
