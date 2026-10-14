@@ -24,8 +24,27 @@ func configDir() string {
 	return filepath.Join(home, ".sbgui")
 }
 
-// WorkDir returns the per-user working dir (config.json, sing-box binary, logs).
-func WorkDir() string { return configDir() }
+func writable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".writetest")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	os.Remove(f.Name())
+	return true
+}
+
+// WorkDir returns the working dir: the folder containing the sbgui executable
+// (portable: sing-box binary sits next to sbgui). Falls back to the user
+// config dir when the exe folder is not writable (e.g. Program Files).
+func WorkDir() string {
+	if exe, err := os.Executable(); err == nil {
+		if dir := filepath.Dir(exe); dir != "" && writable(dir) {
+			return dir
+		}
+	}
+	return configDir()
+}
 
 func OpenStore() (*Store, error) {
 	dir := configDir()

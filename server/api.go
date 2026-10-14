@@ -308,6 +308,12 @@ func (s *Server) routes() {
 }
 
 func (s *Server) regen() error {
+	// bypass-cn mode needs local rule-sets; download via mirrors (no proxy needed)
+	if s.store.Data.Cfg.Mode == "bypass-cn" {
+		if err := core.EnsureRuleSets(s.workDir); err != nil {
+			return err
+		}
+	}
 	_, err := core.BuildConfig(s.store.Data, s.workDir)
 	return err
 }

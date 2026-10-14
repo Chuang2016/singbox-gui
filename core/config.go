@@ -42,7 +42,7 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		map[string]any{"type": "selector", "tag": "proxy", "outbounds": append([]string{"auto"}, nodeTags...), "default": defTag},
 		map[string]any{"type": "urltest", "tag": "auto", "outbounds": nodeTags,
 			"url": "https://www.gstatic.com/generate_204", "interval": "10m", "tolerance": 50},
-		map[string]any{"type": "direct", "tag": "direct", "domain_resolver": "google"},
+		map[string]any{"type": "direct", "tag": "direct", "domain_resolver": "local"},
 		map[string]any{"type": "block", "tag": "block"},
 	)
 
@@ -51,27 +51,21 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		map[string]any{"action": "sniff"},
 	}
 	ruleSets := []any{}
-	dnsRules := []any{}
 	switch d.Cfg.Mode {
 	case "global-proxy":
 		// everything through proxy; keep only dns rule
 	case "global-direct":
 		rules = append(rules, map[string]any{"outbound": "direct"})
 	default: // bypass-cn
-		ruleSets = append(ruleSets,
-			map[string]any{"type": "remote", "tag": "geosite-cn", "format": "binary",
-				"url":         "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-				"http_client": "rs-client"},
-			map[string]any{"type": "remote", "tag": "geoip-cn", "format": "binary",
-				"url":         "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-				"http_client": "rs-client"},
-		)
+		// local rule-sets (downloaded by sbgui via CN-friendly mirrors, no proxy needed)
+		for _, tag := range []string{"geosite-cn", "geoip-cn"} {
+			ruleSets = append(ruleSets,
+				map[string]any{"type": "local", "tag": tag, "format": "binary",
+					"path": filepath.Join(RuleSetDir(workDir), tag+".srs")})
+		}
 		rules = append(rules,
 			map[string]any{"rule_set": []string{"geosite-cn"}, "outbound": "direct"},
 			map[string]any{"rule_set": []string{"geoip-cn"}, "outbound": "direct"},
-		)
-		dnsRules = append(dnsRules,
-			map[string]any{"action": "route", "server": "local", "rule_set": "geosite-cn"},
 		)
 	}
 	// custom rules (before final)
@@ -94,11 +88,9 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		"log": map[string]any{"level": "warn", "timestamp": true},
 		"dns": map[string]any{
 			"servers": []any{
-				map[string]any{"tag": "google", "type": "tls", "server": "8.8.8.8"},
 				map[string]any{"tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct"},
 			},
-			"rules": dnsRules,
-			"final": "google",
+			"final": "local",
 		},
 		"inbounds": []any{
 			map[string]any{"type": "mixed", "tag": "mixed-in",
@@ -109,11 +101,7 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 			"rules":                   rules,
 			"rule_set":                ruleSets,
 			"final":                   final,
-			"default_domain_resolver": map[string]any{"server": "google"},
-			"default_http_client":     "rs-client",
-		},
-		"http_clients": []any{
-			map[string]any{"tag": "rs-client", "detour": "proxy"},
+			"default_domain_resolver": map[string]any{"server": "local"},
 		},
 		"experimental": map[string]any{
 			"clash_api": map[string]any{

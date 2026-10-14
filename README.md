@@ -1,49 +1,53 @@
-# sbgui — 轻量级 sing-box 图形管理工具
+# sbgui — lightweight sing-box GUI manager
 
-单文件 Go 程序 + 内嵌 Web 仪表盘，管理 sing-box 核心：导入链接/订阅、规则分流、实时流量、连接管理。
+A single Go binary with an embedded web dashboard that manages the sing-box core:
+import links/subscriptions, rule-based routing, realtime traffic, connection management.
 
-![platform](https://img.shields.io/badge/平台-Windows%20%7C%20macOS-blue) ![sing-box](https://img.shields.io/badge/sing--box-%3E%3D1.10-green)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue) ![sing-box](https://img.shields.io/badge/sing--box-%3E%3D1.10-green)
 
-## 功能
+## Features
 
-- **导入节点**：粘贴 `ss://` `vmess://` `vless://` `trojan://` `hysteria2://` `tuic://` 链接，每行一个
-- **订阅**：支持 base64/v2rayN、sing-box JSON、Clash YAML 三种格式，可定时自动更新
-- **规则分流**：三种预设（绕过大陆 / 全局代理 / 全局直连）+ 自定义域名/IP 规则
-- **流量管理**：实时上下行曲线、活动连接列表、可一键断开连接
-- **节点切换**：点击即切换出口，另有 `auto` 组按延迟自动优选
-- **系统代理**：一键开关（Windows/macOS）
+- **Import nodes**: paste `ss://` `vmess://` `vless://` `trojan://` `hysteria2://` `tuic://` links, one per line
+- **Subscriptions**: base64/v2rayN, sing-box JSON and Clash YAML formats, with auto refresh
+- **Rule-based routing**: 3 presets (bypass mainland CN / global proxy / global direct) + custom domain/IP rules.
+  CN rule-sets are downloaded by sbgui itself via CDN mirrors and stored locally — sing-box starts with zero network dependency.
+- **Traffic management**: realtime up/down chart, active connection list, one-click kill
+- **Node switching**: click to switch egress; an `auto` group picks by latency
+- **System proxy**: one-click toggle (Windows/macOS)
+- **Portable**: all files (config, database, rule-sets, logs) live next to `sbgui` — just drop `sing-box` beside it
 
-## 快速开始
+## Quick start
 
-1. 从 [sing-box releases](https://github.com/SagerNet/sing-box/releases) 下载对应平台的 sing-box（≥ 1.10，建议与本仓库同期的 1.14.x），解压得到 `sing-box`（Windows 为 `sing-box.exe`）
-2. 把 `sbgui` 和 `sing-box` 放到**同一目录**
-3. 运行 `sbgui`，浏览器打开 http://127.0.0.1:20123
-4. 导入链接或添加订阅 → 点「启动」→ 点「开启系统代理」
+1. Download sing-box for your platform from [sing-box releases](https://github.com/SagerNet/sing-box/releases) (≥ 1.10, 1.14.x recommended) and extract `sing-box` (`sing-box.exe` on Windows)
+2. Put `sbgui` and `sing-box` in the **same folder**
+3. Run `sbgui`, open http://127.0.0.1:20123 in your browser
+4. Import links or add a subscription → click **Start** → **Enable system proxy**
 
-预编译包见 [Releases](../../releases)（`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64`）。
+Prebuilt binaries are in [Releases](../../releases) (`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64`).
 
-macOS 首次运行若提示“无法验证开发者”：`xattr -d com.apple.quarantine sbgui-darwin-arm64`
+macOS first run, if Gatekeeper complains: `xattr -d com.apple.quarantine sbgui-darwin-arm64`
 
-## 自己编译
+## Build from source
 
 ```bash
-./build.sh   # 输出 dist/: windows-amd64 / darwin-arm64 / darwin-amd64
+./build.sh   # outputs dist/: windows-amd64 / darwin-arm64 / darwin-amd64
 ```
 
-纯 Go、无 CGO，Linux 下可直接交叉编译。
+Pure Go, no CGO — cross-compile from Linux directly.
 
-## 工作原理
+## How it works
 
-- `sbgui` 根据你的节点/订阅/规则生成 `config.json`，用 `sing-box check` 校验后拉起 `sing-box run` 子进程
-- 仪表盘经由 sing-box 的 Clash API 取实时流量（`/traffic`）与连接（`/connections`）
-- 配置/节点/订阅存在用户目录（`~/.config/sbgui` / `%APPDATA%/sbgui`）
+- `sbgui` generates `config.json` from your nodes/subscriptions/rules, validates it with `sing-box check`, then runs `sing-box` as a child process
+- The dashboard talks to sing-box's Clash API for realtime traffic (`/traffic`) and connections (`/connections`)
+- DNS always goes direct via local resolver (no proxy dependency, no DoT timeouts)
+- Node/subscription data is stored in `store.json` next to the binary
 
-## iOS 说明
+## iOS
 
-iOS App 无法从源码直接构建分发——需要 Mac + Xcode + Apple 付费开发者账号签名上架。
-本仓库的 `core/`（链接解析、订阅抓取、配置生成）是纯逻辑包，可被 gomobile/Flutter 等方案复用；
-日常在 iPhone 上使用，建议用 App Store 现有客户端（Shadowrocket / Stash / Surge / Loon 等），它们同样支持订阅与规则分流。
+An installable iOS app cannot be built from source alone — it requires a Mac with Xcode and a paid Apple Developer account for signing.
+The `core/` package (link parsing, subscription fetching, config generation) is pure logic and reusable via gomobile/Flutter.
+For daily use on iPhone, App Store clients (Shadowrocket / Stash / Surge / Loon) cover subscriptions and rule-based routing.
 
-## 许可证
+## License
 
 MIT
