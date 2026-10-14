@@ -6,8 +6,7 @@ export PATH="$HOME/go-sdk/go/bin:$PATH"
 export CGO_ENABLED=0
 mkdir -p dist
 echo "== windows/amd64 =="
-# -H windowsgui: no console window on double-click (desktop-app feel)
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o dist/sbgui.exe .
+GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/sbgui.exe .
 echo "== darwin/arm64 (Apple Silicon) =="
 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-darwin-arm64 .
 echo "== darwin/amd64 (Intel Mac) =="

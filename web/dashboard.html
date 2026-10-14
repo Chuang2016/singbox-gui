@@ -38,7 +38,7 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 <button id="bProxy" onclick="sysproxy(true)">Enable system proxy</button>
 <button id="bUnproxy" onclick="sysproxy(false)" class="ghost">Disable system proxy</button>
 <button onclick="if(confirm('Quit sbgui?'))fetch('/api/quit',{method:'POST'}).then(()=>{document.body.innerHTML='<p style=padding:40px>Bye.</p>';})" class="danger">Quit</button>
-<span class="hint" title="You can close or minimize this page — sbgui and sing-box keep running in the background. Reopen http://127.0.0.1:20123 anytime; use Quit to exit completely.">runs in background</span>
+<span class="hint" title="sbgui runs in the console window — minimize it if you like. Closing this page does not stop it; close the console window (or press Quit) to exit.">console-owned</span>
 <span style="flex:1"></span>
 <span class="traffic">↑ <span id="up">0</span> <small id="upU">B/s</small> &nbsp; ↓ <span id="down">0</span> <small id="downU">B/s</small></span>
 </header>

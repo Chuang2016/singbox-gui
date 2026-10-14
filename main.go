@@ -57,9 +57,12 @@ func main() {
 	srv := server.New(store, mgr, workDir)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
-	fmt.Printf("sbgui dashboard: http://%s\n", addr)
-	fmt.Printf("work dir: %s\n", workDir)
-	fmt.Println("Put the sing-box executable in the work dir (or PATH), then press Start on the page.")
+	fmt.Println("sbgui v1.0.4 - sing-box manager")
+	fmt.Printf("  dashboard : http://%s\n", addr)
+	fmt.Printf("  work dir  : %s\n", workDir)
+	fmt.Println("  (config.json, store.json and ruleset/ live in the work dir)")
+	fmt.Println("  Put the sing-box executable in the work dir (or PATH), then press Start on the page.")
+	fmt.Println("  Minimize this window if you like; close it to stop sbgui.")
 
 	go func() {
 		if err := http.ListenAndServe(addr, srv.Handler()); err != nil {
