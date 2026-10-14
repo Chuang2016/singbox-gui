@@ -1,0 +1,5 @@
+dist/
+*.exe
+sbgui
+sbgui-darwin-*
+/tmp/

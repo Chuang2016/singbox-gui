@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sbgui — sing-box 图形管理</title>
+<style>
+*{box-sizing:border-box}body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;margin:0;background:#0f1419;color:#e6edf3}
+header{background:#161d24;padding:12px 20px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:5;border-bottom:1px solid #2a3340}
+h1{font-size:18px;margin:0}h1 small{color:#8b98a5;font-weight:400}
+.badge{padding:3px 10px;border-radius:12px;font-size:12px}.on{background:#1a7f37;color:#fff}.off{background:#5a6572;color:#fff}
+button{background:#1f6feb;color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer;font-size:13px}
+button:disabled{opacity:.4;cursor:default}button.danger{background:#a40e26}button.ghost{background:#2a3340}
+main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:16px}
+.card{background:#161d24;border:1px solid #2a3340;border-radius:10px;padding:14px 16px}
+.card h2{font-size:14px;margin:0 0 10px;color:#8b98a5;text-transform:uppercase;letter-spacing:.5px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid #232c36}
+th{color:#8b98a5;font-weight:600}tr:hover td{background:#1a222b}
+input,textarea,select{background:#0f1419;border:1px solid #2a3340;color:#e6edf3;border-radius:6px;padding:8px;font-size:13px}
+textarea{width:100%;min-height:70px}input[type=text]{width:100%}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+#spark{width:100%;height:90px;background:#0f1419;border-radius:6px}
+.traffic{font-size:22px;font-weight:700}.traffic small{font-size:12px;color:#8b98a5;font-weight:400}
+.logbox{background:#0a0d11;border-radius:6px;padding:10px;height:150px;overflow:auto;font-size:12px;white-space:pre-wrap}
+.tag{cursor:pointer}.tag.sel{color:#58a6ff;font-weight:700}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.hint{font-size:12px;color:#8b98a5;margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+<h1>sbgui <small>sing-box 图形管理</small></h1>
+<span id="st" class="badge off">未运行</span>
+<button id="bStart" onclick="ctl('start')">启动</button>
+<button id="bStop" onclick="ctl('stop')" class="ghost">停止</button>
+<button id="bRestart" onclick="ctl('restart')" class="ghost">重启</button>
+<button id="bProxy" onclick="sysproxy(true)">开启系统代理</button>
+<button id="bUnproxy" onclick="sysproxy(false)" class="ghost">关闭系统代理</button>
+<span style="flex:1"></span>
+<span class="traffic">↑ <span id="up">0</span> <small id="upU">B/s</small> &nbsp; ↓ <span id="down">0</span> <small id="downU">B/s</small></span>
+</header>
+<main>
+<div class="card"><h2>实时流量</h2><canvas id="spark" width="1000" height="90"></canvas>
+<div class="hint">经由 sing-box Clash API 的实时上下行。虚线绿=下载，蓝=上传。</div></div>
+
+<div class="grid2">
+<div class="card"><h2>节点（点击 tag 切换）</h2>
+<table id="nodes"><thead><tr><th></th><th>名称</th><th>协议</th><th>来源</th><th></th></tr></thead><tbody></tbody></table>
+<div class="hint">proxy 选择器默认跟随你在用的节点；auto 组按延迟自动优选。</div></div>
+
+<div class="card"><h2>导入链接</h2>
+<textarea id="links" placeholder="粘贴 ss:// vmess:// vless:// trojan:// hysteria2:// tuic://，每行一个"></textarea>
+<div class="row" style="margin-top:8px"><button onclick="importLinks()">导入</button><span id="impMsg" class="hint"></span></div>
+<h2 style="margin-top:14px">订阅</h2>
+<div class="row"><input type="text" id="subName" placeholder="名称" style="width:120px"><input type="text" id="subUrl" placeholder="订阅 URL" style="flex:1"><button onclick="addSub()">添加并更新</button></div>
+<table id="subs" style="margin-top:8px"><thead><tr><th>名称</th><th>节点数</th><th>更新时间</th><th></th></tr></thead><tbody></tbody></table>
+</div>
+</div>
+
+<div class="grid2">
+<div class="card"><h2>规则分流</h2>
+<div class="row"><select id="mode">
+<option value="bypass-cn">绕过大陆（国内直连，其余代理）</option>
+<option value="global-proxy">全局代理</option>
+<option value="global-direct">全局直连</option>
+</select><button onclick="saveSettings()">保存并应用</button></div>
+<div class="hint">自定义规则（优先级高于预设）：</div>
+<table id="rules"><thead><tr><th>类型</th><th>值</th><th>走</th><th></th></tr></thead><tbody></tbody></table>
+<div class="row" style="margin-top:8px">
+<select id="rKind"><option value="domain">域名后缀</option><option value="ip">IP 段</option></select>
+<input type="text" id="rVal" placeholder="example.com 或 1.2.3.0/24" style="flex:1">
+<select id="rOut"><option value="proxy">代理</option><option value="direct">直连</option><option value="block">拦截</option></select>
+<button onclick="addRule()">添加</button></div>
+</div>
+
+<div class="card"><h2>活动连接 <button class="ghost" style="padding:4px 10px" onclick="loadConns()">刷新</button></h2>
+<table id="conns"><thead><tr><th>目标</th><th>节点</th><th>↑</th><th>↓</th><th></th></tr></thead><tbody></tbody></table>
+</div>
+</div>
+
+<div class="card"><h2>运行日志</h2><div id="logs" class="logbox"></div></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+async function api(p,o){const r=await fetch(p,o);const j=await r.json();if(!r.ok)throw new Error(j.error||r.status);return j;}
+function fmtB(n){const u=['B/s','KB/s','MB/s','GB/s'];let i=0;while(n>=1024&&i<3){n/=1024;i++;}return[n.toFixed(n>=100?0:1),u[i]];}
+async function refresh(){
+ try{const s=await api('/api/status');
+  $('st').textContent=s.running?'运行中':'未运行';$('st').className='badge '+(s.running?'on':'off');
+  $('bStart').disabled=s.running;$('bStop').disabled=!s.running;
+  $('logs').textContent=(s.logs||[]).join('\n');$('logs').scrollTop=1e6;
+  const ns=await api('/api/nodes');const tb=$('nodes').querySelector('tbody');tb.innerHTML='';
+  const st2=await api('/api/settings');$('mode').value=st2.mode||'bypass-cn';
+  ns.forEach(n=>{const tr=document.createElement('tr');
+   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono">${n.source}</td><td><button class="danger" data-del="${n.id}" style="padding:4px 8px">删</button></td>`;
+   tr.children[1].textContent=n.tag;tb.appendChild(tr);});
+  tb.querySelectorAll('.tag').forEach(e=>e.onclick=()=>select(e.dataset.id));
+  tb.querySelectorAll('[data-del]').forEach(e=>e.onclick=async()=>{await api('/api/nodes/'+e.dataset.del,{method:'DELETE'});refresh();});
+  const rs=$('rules').querySelector('tbody');rs.innerHTML='';
+  (st2.custom_rules||[]).forEach((r,i)=>{const tr=document.createElement('tr');
+   tr.innerHTML=`<td>${r.kind==='ip'?'IP 段':'域名后缀'}</td><td class="mono"></td><td>${r.outbound}</td><td><button class="danger" data-i="${i}" style="padding:4px 8px">删</button></td>`;
+   tr.children[1].textContent=r.value;rs.appendChild(tr);});
+  rs.querySelectorAll('[data-i]').forEach(e=>e.onclick=async()=>{const s2=await api('/api/settings');s2.custom_rules.splice(+e.dataset.i,1);await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(s2)});refresh();});
+  window._cfg=st2;
+ }catch(e){}
+}
+async function ctl(a){try{await api('/api/'+a,{method:'POST'});}catch(e){alert(e.message);}refresh();}
+async function importLinks(){const t=$('links').value;if(!t.trim())return;try{const r=await api('/api/nodes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});$('impMsg').textContent=`成功 ${r.added}，失败 ${r.failed}`;$('links').value='';}catch(e){$('impMsg').textContent=e.message;}refresh();}
+async function addSub(){const n=$('subName').value,u=$('subUrl').value;if(!u.trim())return;try{const r=await api('/api/subs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n||u,url:u})});if(r.warning)alert('已添加但更新失败：'+r.warning);}catch(e){alert(e.message);}$('subUrl').value='';refreshSubs();}
+async function refreshSubs(){try{const ss=await api('/api/subs');const tb=$('subs').querySelector('tbody');tb.innerHTML='';
+ ss.forEach(s=>{const tr=document.createElement('tr');tr.innerHTML=`<td></td><td>${s.count||0}</td><td class="mono">${s.updated_at||'-'}</td><td><button data-r="${s.id}" style="padding:4px 8px">更新</button> <button class="danger" data-d="${s.id}" style="padding:4px 8px">删</button></td>`;tr.children[0].textContent=s.name;tb.appendChild(tr);});
+ tb.querySelectorAll('[data-r]').forEach(e=>e.onclick=async()=>{try{await api('/api/subs/'+e.dataset.r+'/refresh',{method:'POST'});}catch(err){alert(err.message);}refresh();refreshSubs();});
+ tb.querySelectorAll('[data-d]').forEach(e=>e.onclick=async()=>{await api('/api/subs/'+e.dataset.d,{method:'DELETE'});refresh();refreshSubs();});
+}catch(e){}}
+async function select(id){try{await api('/api/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:id})});}catch(e){alert(e.message);}refresh();}
+async function addRule(){const c=window._cfg||{};c.custom_rules=c.custom_rules||[];const v=$('rVal').value.trim();if(!v)return;
+ c.custom_rules.push({kind:$('rKind').value,value:v,outbound:$('rOut').value});
+ await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});$('rVal').value='';refresh();}
+async function saveSettings(){const c=window._cfg||{};c.mode=$('mode').value;
+ await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
+ if(confirm('规则已保存，是否重启 sing-box 生效？'))ctl('restart');}
+async function sysproxy(en){try{await api('/api/sysproxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:en})});alert(en?'已开启系统代理（127.0.0.1:2080）':'已关闭系统代理');}catch(e){alert(e.message);}}
+async function loadConns(){try{const j=await api('/api/clash/connections');const tb=$('conns').querySelector('tbody');tb.innerHTML='';
+ (j.connections||[]).slice(-30).reverse().forEach(c=>{const tr=document.createElement('tr');
+  tr.innerHTML=`<td class="mono"></td><td></td><td class="mono">${fmtB(c.upload||0)[0]}</td><td class="mono">${fmtB(c.download||0)[0]}</td><td><button class="danger" data-c="${c.id}" style="padding:4px 8px">断开</button></td>`;
+  tr.children[0].textContent=(c.metadata&&c.metadata.host)||(c.metadata&&c.metadata.destinationIP)||'-';
+  tr.children[1].textContent=(c.chains||[]).slice(-1)[0]||'-';tb.appendChild(tr);});
+ tb.querySelectorAll('[data-c]').forEach(e=>e.onclick=async()=>{await fetch('/api/clash/connections/'+e.dataset.c,{method:'DELETE'});loadConns();});
+}catch(e){}}
+// traffic sparkline
+const hist={up:[],dn:[]};const cv=$('spark'),ctx=cv.getContext('2d');
+function draw(){ctx.clearRect(0,0,cv.width,cv.height);const line=(arr,col)=>{if(arr.length<2)return;const mx=Math.max(...arr,1);ctx.strokeStyle=col;ctx.lineWidth=2;ctx.beginPath();arr.forEach((v,i)=>{const x=i/(arr.length-1)*cv.width,y=cv.height-6-(v/mx)*(cv.height-14);i?ctx.lineTo(x,y):ctx.moveTo(x,y);});ctx.stroke();};line(hist.dn,'#3fb950');line(hist.up,'#58a6ff');}
+function traffic(){let ws;try{ws=new WebSocket(`ws://${location.host}/api/clash/traffic`);}catch(e){return;}
+ ws.onmessage=ev=>{try{const d=JSON.parse(ev.data);hist.up.push(d.up||0);hist.dn.push(d.down||0);if(hist.up.length>120){hist.up.shift();hist.dn.shift();}
+  const[uv,uu]=fmtB(d.up||0),[dv,du]=fmtB(d.down||0);$('up').textContent=uv;$('upU').textContent=uu;$('down').textContent=dv;$('downU').textContent=du;draw();}catch(e){}};
+ ws.onclose=()=>setTimeout(traffic,3000);}
+refresh();refreshSubs();loadConns();traffic();setInterval(refresh,5000);setInterval(loadConns,8000);
+</script>
+</body></html>
