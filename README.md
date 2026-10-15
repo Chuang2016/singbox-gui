@@ -54,6 +54,35 @@ loginctl enable-linger $USER   # keep running after logout / start on boot
 Manage with `systemctl --user status|stop|restart sbgui`; logs via `journalctl --user -u sbgui -f`.
 Dashboard stays available at http://127.0.0.1:20123 (`-nobrowser` is already set in the service file).
 
+## Linux server (headless)
+
+1. Copy `sbgui-linux-amd64` and the Linux `sing-box` binary to `/opt/sbgui/`, then:
+```bash
+sudo useradd -r -s /usr/sbin/nologin sbgui
+sudo chown -R sbgui:sbgui /opt/sbgui
+sudo cp sbgui-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sbgui
+```
+2. In the dashboard turn on **Auto-start proxy on launch** once (nodes are stored in `/opt/sbgui/store.json`).
+3. Reach the dashboard safely via SSH tunnel instead of exposing it:
+```bash
+ssh -L 20123:127.0.0.1:20123 user@your-server
+# then open http://127.0.0.1:20123 locally
+```
+The dashboard binds 127.0.0.1 by default; only use `-listen 0.0.0.0` behind a firewall you trust. Logs: `journalctl -u sbgui -f`.
+
+## Gateway mode (Linux, transparent proxy for the whole LAN)
+
+Turn on **Gateway mode** in the dashboard (Routing rules section). sbgui then, as root:
+- enables `net.ipv4.ip_forward`,
+- installs iptables TPROXY rules redirecting all forwarded TCP/UDP into sing-box,
+- adds a `tproxy` inbound (port 2082) to the generated config.
+
+Other devices on the LAN just set this box as their gateway — no per-device proxy settings needed. Traffic still follows your route rules (CN direct, foreign via proxy, ads blocked, DNS hijacked); packets addressed to the box itself (SSH, dashboard) are untouched.
+
+Requirements: run as **root** (for the server service, set `User=root` in `sbgui-server.service`), and a kernel with `xt_TPROXY` (standard on most distros/VPS kernels; check with `modprobe xt_TPROXY`). IPv4 only for now.
+
 Pure Go, no CGO — cross-compile from Linux directly.
 
 ## How it works

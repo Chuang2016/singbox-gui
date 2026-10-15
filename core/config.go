@@ -140,6 +140,15 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 			map[string]any{"action": "route", "server": "local", "rule_set": "geosite-cn"})
 	}
 
+	inbounds := []any{
+		map[string]any{"type": "mixed", "tag": "mixed-in",
+			"listen": "127.0.0.1", "listen_port": d.Cfg.MixedPort},
+	}
+	if d.Cfg.GatewayMode {
+		inbounds = append(inbounds, map[string]any{"type": "tproxy", "tag": "tproxy-in",
+			"listen": "0.0.0.0", "listen_port": GatewayTproxyPort, "network": []string{"tcp", "udp"}})
+	}
+
 	cfg := map[string]any{
 		"log": map[string]any{"level": "warn", "timestamp": true},
 		"dns": map[string]any{
@@ -147,10 +156,7 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 			"rules":   dnsRules,
 			"final":   dnsFinal,
 		},
-		"inbounds": []any{
-			map[string]any{"type": "mixed", "tag": "mixed-in",
-				"listen": "127.0.0.1", "listen_port": d.Cfg.MixedPort},
-		},
+		"inbounds": inbounds,
 		"outbounds": outbounds,
 		"route": map[string]any{
 			"rules":                   rules,

@@ -345,6 +345,32 @@ func (s *Server) routes() {
 				writeErr(w, err)
 				return
 			}
+			if cfg.GatewayMode != s.store.Data.Cfg.GatewayMode {
+				if cfg.GatewayMode {
+					if err := core.SetupGateway(core.GatewayTproxyPort); err != nil {
+						writeErr(w, err)
+						return
+					}
+				} else {
+					_ = core.TeardownGateway()
+				}
+				// tproxy inbound changed -> regen config, restart if running
+				s.store.Data.Cfg = cfg
+				_ = s.store.Save()
+				if err := s.regen(); err != nil {
+					writeErr(w, err)
+					return
+				}
+				if s.mgr.Running() {
+					_ = s.mgr.Stop()
+					if err := s.mgr.Start(); err != nil {
+						writeErr(w, err)
+						return
+					}
+				}
+				writeJSON(w, map[string]string{"ok": "saved"})
+				return
+			}
 			s.store.Data.Cfg = cfg
 			_ = s.store.Save()
 			writeJSON(w, map[string]string{"ok": "saved"})
