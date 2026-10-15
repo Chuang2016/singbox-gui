@@ -45,7 +45,7 @@ On Linux, the one-click system proxy toggle uses GNOME `gsettings`; on other des
 2. Put the binary and `sing-box` in `~/sbgui/`, then install the service:
 ```bash
 mkdir -p ~/.config/systemd/user
-cp sbgui.service ~/.config/systemd/user/
+cp deploy/sbgui.service ~/.config/systemd/user/
 # edit WorkingDirectory/ExecStart in it if your folder differs
 systemctl --user daemon-reload
 systemctl --user enable --now sbgui
@@ -60,7 +60,7 @@ Dashboard stays available at http://127.0.0.1:20123 (`-nobrowser` is already set
 ```bash
 sudo useradd -r -s /usr/sbin/nologin sbgui
 sudo chown -R sbgui:sbgui /opt/sbgui
-sudo cp sbgui-server.service /etc/systemd/system/
+sudo cp deploy/sbgui-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now sbgui
 ```

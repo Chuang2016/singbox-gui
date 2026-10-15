@@ -1,0 +1,52 @@
+# sbgui system-wide service for Linux servers.
+#
+# Install:
+#   sudo useradd -r -s /usr/sbin/nologin sbgui
+#   sudo mkdir -p /opt/sbgui
+#   sudo cp sbgui-linux-amd64 sing-box /opt/sbgui/
+#   sudo chown -R sbgui:sbgui /opt/sbgui
+#   sudo cp sbgui-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sbgui
+#
+# Manage:  sudo systemctl status|stop|restart sbgui
+# Logs:    sudo journalctl -u sbgui -f
+#
+# Dashboard: http://127.0.0.1:20123 on the server itself.
+# For remote access use an SSH tunnel, NOT -listen 0.0.0.0 on the open internet:
+#   ssh -L 20123:127.0.0.1:20123 user@your-server
+#
+# Gateway mode (LAN transparent proxy) needs root: change User=sbgui to
+# User=root below and comment out the hardening lines marked [root-only conflict].
+
+[Unit]
+Description=sbgui - sing-box GUI manager
+Documentation=https://github.com/Chuang2016/singbox-gui
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sbgui
+Group=sbgui
+WorkingDirectory=/opt/sbgui
+ExecStart=/opt/sbgui/sbgui-linux-amd64 -nobrowser -port 20123
+# ExecStart=/opt/sbgui/sbgui-linux-amd64 -nobrowser -port 20123 -listen 127.0.0.1
+
+# restart on crash, not on clean exit (use systemctl stop to stop it)
+Restart=on-failure
+RestartSec=5
+# proxy software can hold many concurrent connections
+LimitNOFILE=65535
+
+# --- hardening (safe for normal mode; see header note for gateway mode) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=true
+ProtectHome=true
+# [root-only conflict] gateway mode writes /etc/sysctl.d and needs net_admin;
+# for gateway mode run as root and drop ProtectSystem / add the caps below:
+# AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

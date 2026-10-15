@@ -1,0 +1,15 @@
+[Unit]
+Description=sbgui - sing-box GUI manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# sbgui runs from its own folder (binary + sing-box + config + ruleset live there)
+WorkingDirectory=%h/sbgui
+ExecStart=%h/sbgui/sbgui-linux-amd64 -nobrowser
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
