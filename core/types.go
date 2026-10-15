@@ -36,6 +36,7 @@ type Settings struct {
 	AutoUpdateHr int          `json:"auto_update_hr"` // subscription refresh interval, 0 = off
 	BlockAds     bool         `json:"block_ads"`      // block ad/tracker domains
 	GFWList      bool         `json:"gfwlist"`        // extra gfwlist domain pack -> proxy
+	AutoStart    bool         `json:"auto_start"`     // start sing-box automatically on launch
 	// user-editable bulk lists (one entry per line), compiled to local rule-sets
 	UserDomains  string       `json:"user_domains"`
 	UserDomainOb string       `json:"user_domain_ob"` // outbound for user domains

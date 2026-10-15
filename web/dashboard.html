@@ -70,6 +70,7 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 <div class="row" style="margin-top:8px">
 <label><input type="checkbox" id="ckAds" style="width:auto" onchange="quickToggle()"> Block ads/trackers</label>
 <label><input type="checkbox" id="ckGfw" style="width:auto" onchange="quickToggle()"> GFW list (extra blocked domains via proxy)</label>
+<label><input type="checkbox" id="ckAuto" style="width:auto" onchange="quickToggle()"> Auto-start proxy on launch</label>
 <button class="ghost" onclick="refreshPacks()" style="padding:5px 10px">Update rule data</button>
 <span id="rsInfo" class="hint"></span>
 </div>
@@ -110,7 +111,7 @@ async function refresh(){
   $('logs').textContent=(s.logs||[]).join('\n');$('logs').scrollTop=1e6;
   const ns=await api('/api/nodes');const tb=$('nodes').querySelector('tbody');tb.innerHTML='';
   const st2=await api('/api/settings');$('mode').value=st2.mode||'bypass-cn';
-  $('ckAds').checked=!!st2.block_ads;$('ckGfw').checked=!!st2.gfwlist;
+  $('ckAds').checked=!!st2.block_ads;$('ckGfw').checked=!!st2.gfwlist;$('ckAuto').checked=!!st2.auto_start;
   if(document.activeElement!==$('udText'))$('udText').value=st2.user_domains||'';
   if(document.activeElement!==$('uiText'))$('uiText').value=st2.user_ips||'';
   $('udOb').value=st2.user_domain_ob||'proxy';$('uiOb').value=st2.user_ip_ob||'proxy';
@@ -163,7 +164,7 @@ async function saveSettings(){const c=window._cfg||{};c.mode=$('mode').value;
  c.user_ips=$('uiText').value;c.user_ip_ob=$('uiOb').value;
  await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});
  if(confirm('Rules saved. Restart sing-box to apply?'))ctl('restart');}
-async function quickToggle(){const c=window._cfg||{};c.block_ads=$('ckAds').checked;c.gfwlist=$('ckGfw').checked;
+async function quickToggle(){const c=window._cfg||{};c.block_ads=$('ckAds').checked;c.gfwlist=$('ckGfw').checked;c.auto_start=$('ckAuto').checked;
  try{await api('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});window._cfg=c;}
  catch(e){alert('Save failed: '+e.message);refresh();}}
 async function saveLists(){const c=window._cfg||{};

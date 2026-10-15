@@ -39,6 +39,21 @@ macOS first run, if Gatekeeper complains: `xattr -d com.apple.quarantine sbgui-d
 
 On Linux, the one-click system proxy toggle uses GNOME `gsettings`; on other desktops set `http_proxy`/`https_proxy` to `http://127.0.0.1:2080` manually.
 
+## Run in background / start on boot (Linux)
+
+1. Check **Auto-start proxy on launch** in the dashboard (Routing rules section), so the proxy comes up without clicking Start.
+2. Put the binary and `sing-box` in `~/sbgui/`, then install the service:
+```bash
+mkdir -p ~/.config/systemd/user
+cp sbgui.service ~/.config/systemd/user/
+# edit WorkingDirectory/ExecStart in it if your folder differs
+systemctl --user daemon-reload
+systemctl --user enable --now sbgui
+loginctl enable-linger $USER   # keep running after logout / start on boot
+```
+Manage with `systemctl --user status|stop|restart sbgui`; logs via `journalctl --user -u sbgui -f`.
+Dashboard stays available at http://127.0.0.1:20123 (`-nobrowser` is already set in the service file).
+
 Pure Go, no CGO — cross-compile from Linux directly.
 
 ## How it works

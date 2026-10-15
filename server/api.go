@@ -38,6 +38,14 @@ func New(store *core.Store, mgr *core.Manager, workDir string) *Server {
 
 func (s *Server) Handler() http.Handler { return s.mux }
 
+// StartProxy regenerates the config and starts sing-box (same as POST /api/start).
+func (s *Server) StartProxy() error {
+	if err := s.regen(); err != nil {
+		return err
+	}
+	return s.mgr.Start()
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)

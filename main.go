@@ -56,6 +56,15 @@ func main() {
 	mgr := core.NewManager(workDir)
 	srv := server.New(store, mgr, workDir)
 
+	// auto-start the proxy on launch when enabled (for background/boot use)
+	if store.Data.Cfg.AutoStart && len(store.Data.Nodes) > 0 {
+		if err := srv.StartProxy(); err != nil {
+			fmt.Fprintln(os.Stderr, "autostart:", err)
+		} else {
+			fmt.Println("proxy auto-started")
+		}
+	}
+
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	fmt.Println("sbgui v1.0.4 - sing-box manager")
 	fmt.Printf("  dashboard : http://%s\n", addr)
