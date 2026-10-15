@@ -11,4 +11,8 @@ echo "== darwin/arm64 (Apple Silicon) =="
 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-darwin-arm64 .
 echo "== darwin/amd64 (Intel Mac) =="
 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-darwin-amd64 .
+echo "== linux/amd64 =="
+GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-linux-amd64 .
+echo "== linux/arm64 =="
+GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-linux-arm64 .
 ls -la dist/

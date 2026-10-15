@@ -27,15 +27,17 @@ Desktop behavior: the dashboard is a page, but sbgui itself runs in the backgrou
 you can minimize or close the page and the proxy keeps working. Reopen http://127.0.0.1:20123
 anytime, or use the **Quit** button to exit completely. (Start with `-nobrowser` to skip auto-open.)
 
-Prebuilt binaries are in [Releases](../../releases) (`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64`).
+Prebuilt binaries are in [Releases](../../releases) (`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64` / `sbgui-linux-amd64`, plus a macOS `.app` bundle).
 
 macOS first run, if Gatekeeper complains: `xattr -d com.apple.quarantine sbgui-darwin-arm64`
 
 ## Build from source
 
 ```bash
-./build.sh   # outputs dist/: windows-amd64 / darwin-arm64 / darwin-amd64
+./build.sh   # outputs dist/: windows-amd64 / darwin-arm64 / darwin-amd64 / linux-amd64 / linux-arm64
 ```
+
+On Linux, the one-click system proxy toggle uses GNOME `gsettings`; on other desktops set `http_proxy`/`https_proxy` to `http://127.0.0.1:2080` manually.
 
 Pure Go, no CGO — cross-compile from Linux directly.
 
