@@ -47,9 +47,9 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 <div class="hint">Realtime up/down via the sing-box Clash API. Green dashed = download, blue = upload.</div></div>
 
 <div class="grid2">
-<div class="card"><h2>Nodes (click the dot to switch) <button class="ghost" style="padding:4px 10px" onclick="checkDelays()">Check latency</button> <span id="delayMsg" class="hint"></span></h2>
-<table id="nodes"><thead><tr><th></th><th>Name</th><th>Protocol</th><th>Delay</th><th>Speed</th><th></th></tr></thead><tbody></tbody></table>
-<div class="hint">The proxy selector follows the node you pick; the auto group picks by latency. Latency = real request through the node (timeout = dead).</div></div>
+<div class="card"><h2>Nodes (click the dot to switch) <button class="ghost" style="padding:4px 10px" onclick="checkDelays()">Check latency</button> <button class="ghost" style="padding:4px 10px" onclick="resetTraffic()">Reset traffic</button> <span id="delayMsg" class="hint"></span></h2>
+<table id="nodes"><thead><tr><th></th><th>Name</th><th>Protocol</th><th>Delay</th><th>Speed</th><th>Traffic</th><th></th></tr></thead><tbody></tbody></table>
+<div class="hint">The proxy selector follows the node you pick; the auto group picks by latency. Latency = real request through the node (timeout = dead). Traffic = cumulative bytes through each node since first run (polled from live connections four times a second (approximate), saved to traffic.json).</div></div>
 
 <div class="card"><h2>Import links</h2>
 <textarea id="links" placeholder="Paste ss:// vmess:// vless:// trojan:// hysteria2:// tuic:// links, one per line"></textarea>
@@ -77,6 +77,18 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 </div>
 <div class="hint">Built-in packs download automatically to <span id="workDir" class="mono"></span>/ruleset/ (CDN mirrors, refreshed weekly).<br>
 DNS split: CN domains resolve via local DNS (fast); foreign domains via clean DNS through proxy (no pollution).</div>
+<div class="row" style="margin-top:8px">
+<select id="rsTarget"><option value="geosite-cn">geosite-cn.srs</option><option value="geoip-cn">geoip-cn.srs</option><option value="geosite-category-ads-all">geosite-category-ads-all.srs</option><option value="gfwlist">gfwlist.txt</option></select>
+<input type="text" id="rsUrl" placeholder="If auto-download fails: paste any working download URL for the selected pack..." style="flex:1">
+<button class="ghost" onclick="importRsUrl()" style="padding:5px 10px">Download</button>
+</div>
+<div class="row" style="margin-top:6px">
+<span class="hint">...or upload a file you downloaded yourself (same target as above):</span>
+<input type="file" id="rsFile" style="width:auto">
+<button class="ghost" onclick="importRsFile()" style="padding:5px 10px">Upload</button>
+<span id="rsMsg" class="hint"></span>
+</div>
+<div class="hint">You can also drop files into the ruleset folder manually — a fresh local copy is always kept and used even if downloads fail.</div>
 <div class="hint" style="margin-top:10px"><b style="color:#e6edf3">My lists</b> (one per line, highest priority — overrides built-in packs):</div>
 <div class="grid2" style="margin-top:6px">
 <div><div class="row"><b style="font-size:13px">Domains</b><select id="udOb"><option value="proxy">Proxy</option><option value="direct">Direct</option><option value="block">Block</option></select></div>
@@ -124,7 +136,8 @@ async function refresh(){
    const dCol=!dok&&d!==undefined?'#f85149':(d<300?'#3fb950':(d<800?'#d29922':'#f85149'));
    const sp=n.speed_mbps, spok=n.speed_ok;
    const spTxt=(sp===undefined||sp===null)?'-':(spok?sp.toFixed(1)+' Mbps':'fail');
-   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono" style="color:${dCol}">${dTxt}</td><td class="mono">${spTxt}</td><td><button data-sp="${n.id}" style="padding:4px 8px" title="Download speed test (switches selector temporarily)">Speed</button> <button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
+   const tf=fmtB(n.traffic_bytes||0);
+   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono" style="color:${dCol}">${dTxt}</td><td class="mono">${spTxt}</td><td class="mono">${tf[0]} ${tf[1].replace('/s','')}</td><td><button data-sp="${n.id}" style="padding:4px 8px" title="Download speed test (switches selector temporarily)">Speed</button> <button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
    tr.children[1].textContent=n.tag;tb.appendChild(tr);});
   tb.querySelectorAll('[data-sp]').forEach(e=>e.onclick=()=>speedTest(e.dataset.sp));
   tb.querySelectorAll('.tag').forEach(e=>e.onclick=()=>select(e.dataset.id));
@@ -148,6 +161,10 @@ async function refreshSubs(){try{const ss=await api('/api/subs');const tb=$('sub
 async function select(id){try{await api('/api/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:id})});}catch(e){alert(e.message);}refresh();}
 async function checkDelays(){$('delayMsg').textContent='Testing...';
  try{await api('/api/nodes/check-delay',{method:'POST'});$('delayMsg').textContent='Done.';}
+ catch(e){$('delayMsg').textContent=e.message;}
+ refresh();}
+async function resetTraffic(){if(!confirm('Reset cumulative traffic counters for all nodes?'))return;
+ try{await api('/api/nodes/reset-traffic',{method:'POST'});$('delayMsg').textContent='Traffic counters reset.';}
  catch(e){$('delayMsg').textContent=e.message;}
  refresh();}
 async function speedTest(id){if(!confirm('Speed test will briefly switch the proxy to this node. Continue?'))return;
@@ -179,6 +196,21 @@ async function refreshPacks(){$('rsInfo').textContent='Updating...';
  $('rsInfo').textContent=Object.entries(r.rulesets||{}).map(([k,v])=>k+': '+v).join(' | ');
  if(confirm('Rule data updated. Restart sing-box to apply?'))ctl('restart');
  }catch(e){$('rsInfo').textContent='Update failed: '+e.message;}}
+function rsDone(r){$('rsInfo').textContent=Object.entries(r.rulesets||{}).map(([k,v])=>k+': '+v).join(' | ');
+ $('rsMsg').textContent='Imported.';
+ if(confirm('Rule-set imported. Restart sing-box to apply?'))ctl('restart');}
+async function importRsUrl(){const t=$('rsTarget').value,u=$('rsUrl').value.trim();
+ if(!u){$('rsMsg').textContent='Paste a URL first.';return;}
+ $('rsMsg').textContent='Downloading...';
+ try{const r=await api('/api/rulesets/import-url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:t,url:u})});rsDone(r);}
+ catch(e){$('rsMsg').textContent='Import failed: '+e.message;}}
+async function importRsFile(){const f=$('rsFile').files[0];
+ if(!f){$('rsMsg').textContent='Choose a file first.';return;}
+ const fd=new FormData();fd.append('target',$('rsTarget').value);fd.append('file',f);
+ $('rsMsg').textContent='Uploading...';
+ try{const resp=await fetch('/api/rulesets/import-file',{method:'POST',body:fd});
+ const r=await resp.json();if(!resp.ok)throw new Error(r.error||('HTTP '+resp.status));rsDone(r);}
+ catch(e){$('rsMsg').textContent='Import failed: '+e.message;}}
 async function sysproxy(en){try{await api('/api/sysproxy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enable:en})});alert(en?'System proxy enabled (127.0.0.1:2080)':'System proxy disabled');}catch(e){alert(e.message);}}
 async function loadConns(){try{const j=await api('/api/clash/connections');const tb=$('conns').querySelector('tbody');tb.innerHTML='';
  (j.connections||[]).slice(-30).reverse().forEach(c=>{const tr=document.createElement('tr');

@@ -24,10 +24,9 @@ import (
 // Requires root (iptables, ip rule, sysctl). Idempotent.
 
 const (
-	gatewayChain     = "SBGUI"
-	gatewayMark      = "0x1/0x1"
-	gatewayTable     = "100"
-	GatewayTproxyPort = 2082
+	gatewayChain = "SBGUI"
+	gatewayMark  = "0x1/0x1"
+	gatewayTable = "100"
 )
 
 func runCmd(name string, args ...string) error {

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -27,12 +28,16 @@ type Server struct {
 	healthMu sync.Mutex
 	delays   map[string]nodeHealth // nodeID -> delay
 	speeds   map[string]nodeHealth // nodeID -> speed
+
+	traffic *trafficTracker // per-node cumulative bytes
 }
 
 func New(store *core.Store, mgr *core.Manager, workDir string) *Server {
 	s := &Server{store: store, mgr: mgr, workDir: workDir, mux: http.NewServeMux(),
-		delays: map[string]nodeHealth{}, speeds: map[string]nodeHealth{}}
+		delays: map[string]nodeHealth{}, speeds: map[string]nodeHealth{},
+		traffic: newTrafficTracker(workDir)}
 	s.routes()
+	go s.traffic.loop(s)
 	return s
 }
 
@@ -87,25 +92,88 @@ func (s *Server) routes() {
 		go func() {
 			time.Sleep(300 * time.Millisecond)
 			_ = s.mgr.Stop()
+			s.traffic.save()
 			os.Exit(0)
 		}()
 		writeJSON(w, map[string]string{"ok": "bye"})
 	})
 
-	// force re-download rule-set packs (bypass 7-day cache), then rebuild config
+	// force re-download rule-set packs (bypass 7-day cache), then rebuild config.
+	// Files are backed up first and restored if the re-download fails, so a
+	// network outage can never leave the install without usable rule-sets.
 	m.HandleFunc("/api/rulesets/refresh", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			w.WriteHeader(405)
 			return
 		}
-		for _, f := range []string{"geosite-cn.srs", "geoip-cn.srs", "geosite-category-ads-all.srs", "gfwlist.json"} {
-			_ = os.Remove(filepath.Join(core.RuleSetDir(s.workDir), f))
+		dir := core.RuleSetDir(s.workDir)
+		names := []string{"geosite-cn.srs", "geoip-cn.srs", "geosite-category-ads-all.srs", "gfwlist.json"}
+		for _, f := range names {
+			_ = os.Rename(filepath.Join(dir, f), filepath.Join(dir, f+".bak"))
 		}
 		if err := s.regen(); err != nil {
+			for _, f := range names { // restore backups
+				_ = os.Rename(filepath.Join(dir, f+".bak"), filepath.Join(dir, f))
+			}
 			writeErr(w, err)
 			return
 		}
+		for _, f := range names {
+			_ = os.Remove(filepath.Join(dir, f+".bak"))
+		}
 		writeJSON(w, map[string]any{"ok": "refreshed", "rulesets": core.RuleSetInfo(s.workDir)})
+	})
+
+	// manually import a rule-set from a user-pasted URL (any reachable mirror)
+	m.HandleFunc("/api/rulesets/import-url", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		var req struct {
+			Target string `json:"target"`
+			URL    string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := core.ImportRuleSetFromURL(s.workDir, req.Target, strings.TrimSpace(req.URL)); err != nil {
+			writeErr(w, err)
+			return
+		}
+		_ = s.regen() // best effort: import counts even if config can't build yet (e.g. no nodes)
+		writeJSON(w, map[string]any{"ok": "imported", "rulesets": core.RuleSetInfo(s.workDir)})
+	})
+
+	// manually upload a rule-set file the user downloaded themselves
+	m.HandleFunc("/api/rulesets/import-file", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		if err := r.ParseMultipartForm(64 << 20); err != nil {
+			writeErr(w, err)
+			return
+		}
+		target := r.FormValue("target")
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		defer f.Close()
+		data, err := io.ReadAll(io.LimitReader(f, 64<<20))
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		if err := core.ImportRuleSetFile(s.workDir, target, data); err != nil {
+			writeErr(w, err)
+			return
+		}
+		_ = s.regen() // best effort, same as import-url
+		writeJSON(w, map[string]any{"ok": "imported", "rulesets": core.RuleSetInfo(s.workDir)})
 	})
 	m.HandleFunc("/api/start", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
@@ -170,6 +238,7 @@ func (s *Server) routes() {
 					m["speed_at"] = h.At
 					m["speed_ok"] = h.OK
 				}
+				m["traffic_bytes"] = s.traffic.total(n.ID)
 				out = append(out, m)
 			}
 			s.healthMu.Unlock()
@@ -210,6 +279,16 @@ func (s *Server) routes() {
 		}
 	})
 	// delay check for all nodes (via sing-box Clash API)
+	// reset cumulative per-node traffic counters
+	m.HandleFunc("/api/nodes/reset-traffic", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			w.WriteHeader(405)
+			return
+		}
+		s.traffic.reset()
+		writeJSON(w, map[string]string{"ok": "reset"})
+	})
+
 	m.HandleFunc("/api/nodes/check-delay", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			w.WriteHeader(405)

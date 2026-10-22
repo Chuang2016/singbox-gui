@@ -13,14 +13,20 @@ import (
 	"time"
 )
 
-// Rule-set sources: jsdelivr first (reachable from CN), then upstream.
+// Rule-set sources: jsdelivr CDN nodes first (reachable from CN), then upstream.
+// Download failures never destroy a usable cached file: Ensure*/Refresh keep
+// the old copy and only error when nothing usable exists on disk.
 var ruleSetMirrors = map[string][]string{
 	"geosite-cn": {
-		"https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/rule-set/geosite-cn.srs",
+		"https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+		"https://fastly.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+		"https://gcore.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
 		"https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
 	},
 	"geoip-cn": {
-		"https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/rule-set/geoip-cn.srs",
+		"https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
+		"https://fastly.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
+		"https://gcore.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
 		"https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
 	},
 }
@@ -30,8 +36,35 @@ const ruleSetMaxAge = 7 * 24 * time.Hour
 // RuleSetDir is where downloaded .srs files live (under work dir).
 func RuleSetDir(workDir string) string { return filepath.Join(workDir, "ruleset") }
 
+// usableFile reports whether path holds a plausible rule-set file.
+func usableFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Size() > 1024
+}
+
+// downloadTag tries each mirror in turn, saving to dir/<tag>.srs via a temp
+// file so a failed download never truncates an existing good copy.
+func downloadTag(dir, tag string, urls []string) error {
+	path := filepath.Join(dir, tag+".srs")
+	var lastErr error
+	for _, u := range urls {
+		if err := downloadFile(u, path+".tmp"); err != nil {
+			lastErr = err
+			continue
+		}
+		if err := os.Rename(path+".tmp", path); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 // EnsureRuleSets downloads geosite-cn / geoip-cn .srs files into workDir/ruleset
 // when missing or older than 7 days. Uses CN-friendly mirrors; no proxy needed.
+// If a refresh download fails but a cached copy exists, the cache is kept and
+// no error is returned (the proxy must keep working when GitHub is unreachable).
 func EnsureRuleSets(workDir string) error {
 	dir := RuleSetDir(workDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -42,21 +75,12 @@ func EnsureRuleSets(workDir string) error {
 		if st, err := os.Stat(path); err == nil && st.Size() > 1024 && time.Since(st.ModTime()) < ruleSetMaxAge {
 			continue // fresh cache
 		}
-		var lastErr error
-		for _, u := range urls {
-			if err := downloadFile(u, path+".tmp"); err != nil {
-				lastErr = err
+		if err := downloadTag(dir, tag, urls); err != nil {
+			if usableFile(path) {
+				fmt.Fprintf(os.Stderr, "warning: ruleset %s refresh failed, keeping cached copy: %v\n", tag, err)
 				continue
 			}
-			if err := os.Rename(path+".tmp", path); err != nil {
-				lastErr = err
-				continue
-			}
-			lastErr = nil
-			break
-		}
-		if lastErr != nil {
-			return fmt.Errorf("download ruleset %s failed (tried %d mirrors): %w", tag, len(urls), lastErr)
+			return fmt.Errorf("download ruleset %s failed (tried %d mirrors): %w", tag, len(urls), err)
 		}
 	}
 	return nil
@@ -97,17 +121,22 @@ func downloadFile(url, dest string) error {
 // Extra downloadable packs.
 var extraMirrors = map[string][]string{
 	"geosite-category-ads-all": {
-		"https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/rule-set/geosite-category-ads-all.srs",
+		"https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-category-ads-all.srs",
+		"https://fastly.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-category-ads-all.srs",
+		"https://gcore.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-category-ads-all.srs",
 		"https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs",
 	},
 }
 
 var gfwlistMirrors = []string{
 	"https://cdn.jsdelivr.net/gh/gfwlist/gfwlist@master/gfwlist.txt",
+	"https://fastly.jsdelivr.net/gh/gfwlist/gfwlist@master/gfwlist.txt",
+	"https://gcore.jsdelivr.net/gh/gfwlist/gfwlist@master/gfwlist.txt",
 	"https://raw.githubusercontent.com/gfwlist/gfwlist/master/gfwlist.txt",
 }
 
 // EnsureExtraRuleSets downloads optional .srs packs (e.g. ads) into workDir/ruleset.
+// Same fallback rule as EnsureRuleSets: a failed refresh keeps the cached copy.
 func EnsureExtraRuleSets(workDir string, tags []string) error {
 	dir := RuleSetDir(workDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -122,30 +151,46 @@ func EnsureExtraRuleSets(workDir string, tags []string) error {
 		if st, err := os.Stat(path); err == nil && st.Size() > 1024 && time.Since(st.ModTime()) < ruleSetMaxAge {
 			continue
 		}
-		var lastErr error
-		for _, u := range urls {
-			if err := downloadFile(u, path+".tmp"); err != nil {
-				lastErr = err
+		if err := downloadTag(dir, tag, urls); err != nil {
+			if usableFile(path) {
+				fmt.Fprintf(os.Stderr, "warning: ruleset %s refresh failed, keeping cached copy: %v\n", tag, err)
 				continue
 			}
-			if err := os.Rename(path+".tmp", path); err != nil {
-				lastErr = err
-				continue
-			}
-			lastErr = nil
-			break
-		}
-		if lastErr != nil {
-			return fmt.Errorf("download ruleset %s failed: %w", tag, lastErr)
+			return fmt.Errorf("download ruleset %s failed: %w", tag, err)
 		}
 	}
 	return nil
+}
+
+// writeGFWList parses a raw gfwlist body and writes ruleset/gfwlist.json.
+func writeGFWList(workDir string, body []byte) error {
+	domains, _ := parseGFWList(body)
+	if len(domains) < 100 {
+		return fmt.Errorf("gfwlist parse: only %d domains, refusing", len(domains))
+	}
+	doc := map[string]any{
+		"version": 3,
+		"rules": []any{
+			map[string]any{"domain_suffix": sortedKeys(domains)},
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(RuleSetDir(workDir), "gfwlist.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // EnsureGFWList downloads the gfwlist, converts it to a sing-box source
 // rule-set (domain_suffix list) at workDir/ruleset/gfwlist.json.
 // @@ exceptions are removed from the blocked set (they fall through to
 // normal routing, i.e. "don't proxy").
+// Same fallback rule as EnsureRuleSets: a failed refresh keeps the cached copy.
 func EnsureGFWList(workDir string) error {
 	dir := RuleSetDir(workDir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -167,27 +212,80 @@ func EnsureGFWList(workDir string) error {
 		break
 	}
 	if lastErr != nil {
+		if usableFile(path) {
+			fmt.Fprintf(os.Stderr, "warning: gfwlist refresh failed, keeping cached copy: %v\n", lastErr)
+			return nil
+		}
 		return fmt.Errorf("download gfwlist failed: %w", lastErr)
 	}
-	domains, _ := parseGFWList(body)
-	if len(domains) < 100 {
-		return fmt.Errorf("gfwlist parse: only %d domains, refusing", len(domains))
-	}
-	doc := map[string]any{
-		"version": 3,
-		"rules": []any{
-			map[string]any{"domain_suffix": sortedKeys(domains)},
-		},
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
+	if err := writeGFWList(workDir, body); err != nil {
+		if usableFile(path) {
+			fmt.Fprintf(os.Stderr, "warning: gfwlist refresh failed, keeping cached copy: %v\n", err)
+			return nil
+		}
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0644); err != nil {
+	return nil
+}
+
+// ImportableTargets lists the rule-set files a user can supply manually.
+var ImportableTargets = []string{"geosite-cn", "geoip-cn", "geosite-category-ads-all", "gfwlist"}
+
+// ImportRuleSetFromURL downloads url into the rule-set dir as the given
+// target ("gfwlist" expects the raw gfwlist.txt and is converted to JSON).
+func ImportRuleSetFromURL(workDir, target, url string) error {
+	if !validTarget(target) {
+		return fmt.Errorf("unknown rule-set target: %s", target)
+	}
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("url must start with http:// or https://")
+	}
+	dir := RuleSetDir(workDir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if target == "gfwlist" {
+		body, err := fetchBytes(url)
+		if err != nil {
+			return err
+		}
+		return writeGFWList(workDir, body)
+	}
+	return downloadTag(dir, target, []string{url})
+}
+
+// ImportRuleSetFile saves user-uploaded bytes as the given target.
+func ImportRuleSetFile(workDir, target string, data []byte) error {
+	if !validTarget(target) {
+		return fmt.Errorf("unknown rule-set target: %s", target)
+	}
+	dir := RuleSetDir(workDir)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	if target == "gfwlist" {
+		return writeGFWList(workDir, data)
+	}
+	if len(data) <= 1024 {
+		return fmt.Errorf("file too small (%d bytes), probably not a .srs rule-set", len(data))
+	}
+	if data[0] != 'S' { // .srs magic header is "SRS"
+		fmt.Fprintf(os.Stderr, "warning: imported %s does not start with SRS magic\n", target)
+	}
+	path := filepath.Join(dir, target+".srs")
+	if err := os.WriteFile(path+".tmp", data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
+}
+
+func validTarget(t string) bool {
+	for _, x := range ImportableTargets {
+		if x == t {
+			return true
+		}
+	}
+	return false
 }
 
 func fetchBytes(url string) ([]byte, error) {

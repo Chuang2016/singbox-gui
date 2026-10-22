@@ -24,6 +24,9 @@ import (
 	"github.com/Chuang2016/singbox-gui/server"
 )
 
+// version is bumped on each release.
+const version = "1.0.8"
+
 // openBrowser launches the dashboard URL in the default browser.
 func openBrowser(url string) {
 	var cmd *exec.Cmd
@@ -76,7 +79,7 @@ func main() {
 	}
 
 	addr := fmt.Sprintf("%s:%d", *listen, *port)
-	fmt.Println("sbgui v1.0.4 - sing-box manager")
+	fmt.Println("sbgui v" + version + " - sing-box manager")
 	fmt.Printf("  dashboard : http://%s\n", addr)
 	fmt.Printf("  work dir  : %s\n", workDir)
 	fmt.Println("  (config.json, store.json and ruleset/ live in the work dir)")

@@ -15,4 +15,10 @@ echo "== linux/amd64 =="
 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-linux-amd64 .
 echo "== linux/arm64 =="
 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/sbgui-linux-arm64 .
+# self-check: every binary must carry the current version string from main.go
+VER=$(grep -o 'const version = "[^"]*"' main.go | cut -d'"' -f2)
+for f in dist/sbgui.exe dist/sbgui-darwin-arm64 dist/sbgui-darwin-amd64 dist/sbgui-linux-amd64 dist/sbgui-linux-arm64; do
+  grep -aq "v$VER" "$f" || { echo "FAIL: $f does not contain version $VER"; exit 1; }
+done
+echo "all binaries carry v$VER"
 ls -la dist/

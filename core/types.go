@@ -27,6 +27,11 @@ type CustomRule struct {
 }
 
 // Settings holds global options.
+// GatewayTproxyPort is the listen port of the sing-box tproxy inbound used
+// by gateway (transparent proxy) mode. Defined here, not in the Linux-only
+// gateway file: config.go references it on every platform.
+const GatewayTproxyPort = 2082
+
 type Settings struct {
 	Mode         string       `json:"mode"` // "bypass-cn" | "global-proxy" | "global-direct"
 	CustomRules  []CustomRule `json:"custom_rules"`

@@ -29,6 +29,8 @@ anytime, or use the **Quit** button to exit completely. (Start with `-nobrowser`
 
 Prebuilt binaries are in [Releases](../../releases) (`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64` / `sbgui-linux-amd64`, plus a macOS `.app` bundle).
 
+Rule-set packs (geosite-cn / geoip-cn / ads / gfwlist) auto-download from jsDelivr CDN mirrors and refresh weekly. If downloads fail, the last cached copy keeps working — and you can import a pack manually in the dashboard (paste any working URL, or upload a file you downloaded yourself). Per-node cumulative traffic is shown in the node table (polled from live connections every 250ms, persisted in `traffic.json`; very short connections may be undercounted).
+
 macOS first run, if Gatekeeper complains: `xattr -d com.apple.quarantine sbgui-darwin-arm64`
 
 ## Build from source
