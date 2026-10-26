@@ -48,8 +48,22 @@ textarea{width:100%;min-height:70px}input[type=text]{width:100%}
 
 <div class="grid2">
 <div class="card"><h2>Nodes (click the dot to switch) <button class="ghost" style="padding:4px 10px" onclick="checkDelays()">Check latency</button> <button class="ghost" style="padding:4px 10px" onclick="resetTraffic()">Reset traffic</button> <span id="delayMsg" class="hint"></span></h2>
-<table id="nodes"><thead><tr><th></th><th>Name</th><th>Protocol</th><th>Delay</th><th>Speed</th><th>Traffic</th><th></th></tr></thead><tbody></tbody></table>
-<div class="hint">The proxy selector follows the node you pick; the auto group picks by latency. Latency = real request through the node (timeout = dead). Traffic = cumulative bytes through each node since first run (polled from live connections four times a second (approximate), saved to traffic.json).</div></div>
+<table id="nodes"><thead><tr><th></th><th>Name</th><th>Protocol</th><th onclick="setSort('delay')" style="cursor:pointer" title="Click to sort">Delay <span id="si-delay"></span></th><th onclick="setSort('speed')" style="cursor:pointer" title="Click to sort">Speed <span id="si-speed"></span></th><th onclick="setSort('traffic')" style="cursor:pointer" title="Click to sort">Traffic <span id="si-traffic"></span></th><th></th></tr></thead><tbody></tbody></table>
+<div class="hint">The proxy selector follows the node you pick; the auto group picks by latency. Latency = real request through the node (timeout = dead). Traffic = cumulative bytes through each node since first run (polled from live connections four times a second (approximate), saved to traffic.json). Click Delay / Speed / Traffic headers to sort.</div></div>
+
+<div class="card" id="editCard" style="display:none"><h2>Edit node</h2>
+<div class="row"><span class="hint">Name</span><input type="text" id="edName" style="flex:1"></div>
+<div class="grid2" style="margin-top:6px">
+<div><div class="hint">Server (for CDN nodes: a preferred CDN IP)</div><input type="text" id="edServer" style="width:100%"></div>
+<div><div class="hint">Port</div><input type="text" id="edPort" style="width:100%"></div>
+<div><div class="hint">SNI (tls.server_name — your domain for CDN nodes)</div><input type="text" id="edSni" style="width:100%"></div>
+<div><div class="hint">WS Host (transport Host header — your domain for CDN nodes)</div><input type="text" id="edHost" style="width:100%"></div>
+<div><div class="hint">WS Path</div><input type="text" id="edPath" style="width:100%"></div>
+</div>
+<div class="hint" style="margin-top:8px">Full outbound JSON — the quick fields above are patched into it on save:</div>
+<textarea id="edJson" style="min-height:150px;font-family:monospace;width:100%"></textarea>
+<div class="row" style="margin-top:8px"><button onclick="saveEdit()">Save node</button><button class="ghost" onclick="closeEdit()">Cancel</button><span id="edMsg" class="hint"></span></div>
+</div>
 
 <div class="card"><h2>Import links</h2>
 <textarea id="links" placeholder="Paste ss:// vmess:// vless:// trojan:// hysteria2:// tuic:// links, one per line"></textarea>
@@ -130,16 +144,17 @@ async function refresh(){
   $('udOb').value=st2.user_domain_ob||'proxy';$('uiOb').value=st2.user_ip_ob||'proxy';
   $('workDir').textContent=s.work_dir||'';
   $('rsInfo').textContent=Object.entries(s.rulesets||{}).map(([k,v])=>k+': '+v).join(' | ')||'no cached packs';
-  ns.forEach(n=>{const tr=document.createElement('tr');
+  sortedNodes(ns).forEach(n=>{const tr=document.createElement('tr');
    const d=n.delay_ms, dok=n.delay_ok;
    const dTxt=(d===undefined||d===null)?'-':(dok?Math.round(d)+' ms':'timeout');
    const dCol=!dok&&d!==undefined?'#f85149':(d<300?'#3fb950':(d<800?'#d29922':'#f85149'));
    const sp=n.speed_mbps, spok=n.speed_ok;
    const spTxt=(sp===undefined||sp===null)?'-':(spok?sp.toFixed(1)+' Mbps':'fail');
    const tf=fmtB(n.traffic_bytes||0);
-   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono" style="color:${dCol}">${dTxt}</td><td class="mono">${spTxt}</td><td class="mono">${tf[0]} ${tf[1].replace('/s','')}</td><td><button data-sp="${n.id}" style="padding:4px 8px" title="Download speed test (switches selector temporarily)">Speed</button> <button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
+   tr.innerHTML=`<td class="tag ${st2.active_node_id===n.id?'sel':''}" data-id="${n.id}">${st2.active_node_id===n.id?'●':'○'}</td><td></td><td class="mono">${n.protocol}</td><td class="mono" style="color:${dCol}">${dTxt}</td><td class="mono">${spTxt}</td><td class="mono">${tf[0]} ${tf[1].replace('/s','')}</td><td><button data-sp="${n.id}" style="padding:4px 8px" title="Download speed test (switches selector temporarily)">Speed</button> <button data-ed="${n.id}" style="padding:4px 8px">Edit</button> <button class="danger" data-del="${n.id}" style="padding:4px 8px">Del</button></td>`;
    tr.children[1].textContent=n.tag;tb.appendChild(tr);});
   tb.querySelectorAll('[data-sp]').forEach(e=>e.onclick=()=>speedTest(e.dataset.sp));
+  tb.querySelectorAll('[data-ed]').forEach(e=>e.onclick=()=>editNode(e.dataset.ed));
   tb.querySelectorAll('.tag').forEach(e=>e.onclick=()=>select(e.dataset.id));
   tb.querySelectorAll('[data-del]').forEach(e=>e.onclick=async()=>{await api('/api/nodes/'+e.dataset.del,{method:'DELETE'});refresh();});
   const rs=$('rules').querySelector('tbody');rs.innerHTML='';
@@ -167,6 +182,45 @@ async function resetTraffic(){if(!confirm('Reset cumulative traffic counters for
  try{await api('/api/nodes/reset-traffic',{method:'POST'});$('delayMsg').textContent='Traffic counters reset.';}
  catch(e){$('delayMsg').textContent=e.message;}
  refresh();}
+// ---- node sorting (click Delay / Speed / Traffic headers) ----
+let sortKey='', sortDir=1;
+function setSort(k){if(sortKey===k){sortDir=-sortDir;}else{sortKey=k;sortDir=(k==='delay')?1:-1;}
+ ['delay','speed','traffic'].forEach(x=>{const el=$('si-'+x);if(el)el.textContent=(x===sortKey)?(sortDir===1?'▲':'▼'):'';});
+ refresh();}
+function sortedNodes(ns){if(!sortKey)return ns;
+ const f={delay:n=>(n.delay_ok&&n.delay_ms!=null)?n.delay_ms:Infinity,
+          speed:n=>(n.speed_ok&&n.speed_mbps!=null)?n.speed_mbps:-1,
+          traffic:n=>n.traffic_bytes||0}[sortKey];
+ return [...ns].sort((a,b)=>(f(a)-f(b))*sortDir);}
+// ---- node editing (incl. CDN fields) ----
+let editId=null;
+function qget(ob,path){let o=ob;for(const k of path){if(o==null||typeof o!=='object')return '';o=o[k];}return (o==null)?'':o;}
+function qset(ob,path,val){let o=ob;for(let i=0;i<path.length-1;i++){if(o[path[i]]==null||typeof o[path[i]]!=='object')o[path[i]]={};o=o[path[i]];}
+ const last=path[path.length-1];if(val===''||val==null){delete o[last];}else{o[last]=val;}}
+async function editNode(id){try{const n=await api('/api/nodes/'+id);editId=id;const ob=n.outbound||{};
+ $('edName').value=n.name||'';$('edJson').value=JSON.stringify(ob,null,2);
+ $('edServer').value=qget(ob,['server']);$('edPort').value=qget(ob,['server_port']);
+ $('edSni').value=qget(ob,['tls','server_name']);
+ const hdrs=qget(ob,['transport','headers']);$('edHost').value=(hdrs&&(hdrs.Host||hdrs.host))||'';
+ $('edPath').value=qget(ob,['transport','path']);
+ $('edMsg').textContent='';$('editCard').style.display='';
+ $('editCard').scrollIntoView({behavior:'smooth'});
+}catch(e){alert(e.message);}}
+function closeEdit(){$('editCard').style.display='none';editId=null;}
+async function saveEdit(){if(!editId)return;
+ let ob;try{ob=JSON.parse($('edJson').value);}catch(e){$('edMsg').textContent='JSON error: '+e.message;return;}
+ qset(ob,['server'],$('edServer').value.trim());
+ const pv=$('edPort').value.trim();if(pv){const p=parseInt(pv,10);if(!isNaN(p))qset(ob,['server_port'],p);}
+ qset(ob,['tls','server_name'],$('edSni').value.trim());
+ // only touch Host when the outbound has a transport or the field is filled
+ if($('edHost').value.trim()||qget(ob,['transport','headers','Host'])||qget(ob,['transport','headers','host']))
+   qset(ob,['transport','headers','Host'],$('edHost').value.trim());
+ if($('edPath').value.trim()||qget(ob,['transport','path']))
+   qset(ob,['transport','path'],$('edPath').value.trim());
+ try{await api('/api/nodes/'+editId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('edName').value,outbound:ob})});
+ closeEdit();refresh();
+ if(confirm('Node saved. Restart sing-box to apply?'))ctl('restart');
+ }catch(e){$('edMsg').textContent='Save failed: '+e.message;}}
 async function speedTest(id){if(!confirm('Speed test will briefly switch the proxy to this node. Continue?'))return;
  try{$('delayMsg').textContent='Speed testing...';
  const r=await api('/api/nodes/'+id+'/speed',{method:'POST'});

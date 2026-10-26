@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -327,6 +328,79 @@ func (s *Server) routes() {
 				return
 			}
 			writeJSON(w, map[string]any{"speed_mbps": mbps, "at": now})
+			return
+		}
+		// node detail / edit: GET or PUT /api/nodes/{id}
+		if len(parts) == 1 && (r.Method == "GET" || r.Method == "PUT") {
+			id := parts[0]
+			idx := -1
+			for i := range s.store.Data.Nodes {
+				if s.store.Data.Nodes[i].ID == id {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				writeErr(w, fmt.Errorf("node not found"))
+				return
+			}
+			if r.Method == "GET" {
+				n := s.store.Data.Nodes[idx]
+				writeJSON(w, map[string]any{"id": n.ID, "name": n.Tag, "protocol": n.Protocol, "outbound": n.Outbound})
+				return
+			}
+			var req struct {
+				Name     string         `json:"name"`
+				Outbound map[string]any `json:"outbound"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErr(w, err)
+				return
+			}
+			if req.Outbound == nil {
+				writeErr(w, fmt.Errorf("outbound must be a JSON object"))
+				return
+			}
+			if t, _ := req.Outbound["type"].(string); t == "" {
+				writeErr(w, fmt.Errorf("outbound.type is required"))
+				return
+			}
+			delete(req.Outbound, "tag") // internal tag is forced at config build
+			// snapshot for rollback: a rejected edit must not persist
+			old := s.store.Data.Nodes[idx]
+			oldOutbound := map[string]any{}
+			if raw, err := json.Marshal(old.Outbound); err == nil {
+				_ = json.Unmarshal(raw, &oldOutbound)
+			}
+			rollback := func() {
+				s.store.Data.Nodes[idx].Outbound = oldOutbound
+				s.store.Data.Nodes[idx].Tag = old.Tag
+				s.store.Data.Nodes[idx].Protocol = old.Protocol
+				_ = s.store.Save()
+				_ = s.regen()
+			}
+			s.store.Data.Nodes[idx].Outbound = req.Outbound
+			s.store.Data.Nodes[idx].Protocol, _ = req.Outbound["type"].(string)
+			if strings.TrimSpace(req.Name) != "" {
+				s.store.Data.Nodes[idx].Tag = strings.TrimSpace(req.Name)
+			}
+			_ = s.store.Save()
+			if err := s.regen(); err != nil {
+				rollback()
+				writeErr(w, err)
+				return
+			}
+			// validate the rebuilt config so a bad edit is reported immediately
+			// (skipped silently when no sing-box binary exists yet)
+			if out, err := s.mgr.Check(); err != nil {
+				var execErr *exec.Error
+				if !errors.As(err, &execErr) {
+					rollback()
+					writeErr(w, fmt.Errorf("edit rejected by sing-box (rolled back): %v %s", err, out))
+					return
+				}
+			}
+			writeJSON(w, map[string]string{"ok": "saved"})
 			return
 		}
 		// fall through to the existing DELETE handler below

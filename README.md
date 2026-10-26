@@ -29,7 +29,7 @@ anytime, or use the **Quit** button to exit completely. (Start with `-nobrowser`
 
 Prebuilt binaries are in [Releases](../../releases) (`sbgui.exe` / `sbgui-darwin-arm64` / `sbgui-darwin-amd64` / `sbgui-linux-amd64`, plus a macOS `.app` bundle).
 
-Rule-set packs (geosite-cn / geoip-cn / ads / gfwlist) auto-download from jsDelivr CDN mirrors and refresh weekly. If downloads fail, the last cached copy keeps working — and you can import a pack manually in the dashboard (paste any working URL, or upload a file you downloaded yourself). Per-node cumulative traffic is shown in the node table (polled from live connections every 250ms, persisted in `traffic.json`; very short connections may be undercounted).
+Rule-set packs (geosite-cn / geoip-cn / ads / gfwlist) auto-download from jsDelivr CDN mirrors and refresh weekly. If downloads fail, the last cached copy keeps working — and you can import a pack manually in the dashboard (paste any working URL, or upload a file you downloaded yourself). Per-node cumulative traffic is shown in the node table (polled from live connections every 250ms, persisted in `traffic.json`; very short connections may be undercounted). Nodes can be sorted by delay / speed / traffic (click the column headers) and edited in place (Edit button): quick fields for server, port, SNI, WS host and path — for CDN-fronted nodes, put a preferred CDN IP in Server and keep SNI/Host on your domain — plus the full outbound JSON; edits are validated with `sing-box check` and rolled back when rejected.
 
 macOS first run, if Gatekeeper complains: `xattr -d com.apple.quarantine sbgui-darwin-arm64`
 

@@ -25,7 +25,7 @@ import (
 )
 
 // version is bumped on each release.
-const version = "1.0.8"
+const version = "1.0.9"
 
 // openBrowser launches the dashboard URL in the default browser.
 func openBrowser(url string) {
