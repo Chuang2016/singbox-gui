@@ -4,6 +4,8 @@ go 1.24.0
 
 require gopkg.in/yaml.v3 v3.0.1
 
+require github.com/FyshOS/fancyfs v0.0.1 // indirect
+
 require (
 	fyne.io/fyne/v2 v2.8.2
 	fyne.io/systray v1.12.3-0.20260810170012-af4e8e793ec4 // indirect
