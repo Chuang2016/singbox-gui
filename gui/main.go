@@ -1,50 +1,103 @@
-// sbgui-gui: native Fyne front-end for the sbgui core engine (milestone 1 PoC).
+// sbgui-gui: native Fyne front-end for the sbgui core engine.
 //
-// This is a proof of concept: it reuses core/ as-is (store, link parsing,
-// config building, sing-box process management) and replaces the browser
-// dashboard with a real window + system tray. Feature parity with the web
-// dashboard (subscriptions, traffic charts, connections table,
-// urltest) is future work -- see MILESTONE1.md.
+// Layout (milestone 3) follows the Qv2ray arrangement: a left
+// navigation rail (Nodes / Subscriptions / Rules / Connections /
+// Settings), a top bar with the connection controls, the page content
+// in the middle and a slim status bar at the bottom. All behaviour
+// (store, config build, sing-box process, system proxy, rules) comes
+// from the shared core package -- the same code the web dashboard
+// drives -- so the two front-ends cannot drift apart.
 package main
 
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 
 	"github.com/Chuang2016/singbox-gui/core"
 )
 
-// demoLinks seed the list (in memory only, never saved) when the store is
-// empty, so the PoC shows the real core.ParseShareLink path on first run.
+// demoLinks seed the list (in memory only, never saved) when the store
+// is empty, so a first run shows the real core.ParseShareLink path.
 var demoLinks = []string{
 	"vless://00000000-0000-0000-0000-000000000001@example.com:443?security=tls&sni=example.com#Demo-VLESS",
 	"trojan://demopass@example.com:443?sni=example.com#Demo-Trojan",
 	"hysteria2://demopass@example.com:443?insecure=1#Demo-HY2",
 }
 
+const (
+	pageNodes = "nodes"
+	pageSubs  = "subs"
+	pageRules = "rules"
+	pageConns = "conns"
+	pagePrefs = "settings"
+)
+
+// healthVal is one cached measurement (delay ms or speed Mbps) for the
+// Nodes table, mirroring the web dashboard's delay/speed caches.
+type healthVal struct {
+	val float64
+	ok  bool
+	at  string
+}
+
 type guiState struct {
+	app fyne.App
+	win fyne.Window
+
 	workDir string
 	store   *core.Store
 	mgr     *core.Manager
 
-	status *widget.Label
-	logs   *widget.Label
-	list   *widget.List
-	connBt *widget.Button
+	notice  string   // sticky message in the status bar until the next action
+	uiLogs  []string // GUI-side log lines, shown with the sing-box log
+	logMu   sync.Mutex
+	sysProxy   bool // we currently own the OS proxy settings
+	wasRunning bool // last observed sing-box state (auto-clear check)
 
-	notice string   // sticky message kept in the status line until the next action
-	uiLogs []string // GUI-side log lines, shown together with the sing-box log
+	// shell widgets
+	connBt   *widget.Button
+	proxySw  *widget.Check
+	curNode  *widget.Label
+	statusTx *widget.Label
+	rateTx   *widget.Label
+	pages    map[string]fyne.CanvasObject
+	stack    *fyne.Container
+	navBt    map[string]*widget.Button
+	current  string
+	ticks    int
 
-	proxySw    *widget.Check // "System proxy" toggle
-	sysProxy   bool          // we currently own the OS proxy settings
-	wasRunning bool          // last observed sing-box state (auto-clear check)
+	// nodes page
+	nodeTable *widget.Table
+	logLabel  *widget.Label
+	healthMu  sync.Mutex
+	delays    map[string]healthVal
+	speeds    map[string]healthVal
+
+	// connections page
+	connTable    *widget.Table
+	conns        []core.Connection
+	connNote     *widget.Label
+	connFetching bool
+
+	// traffic (tracker created by initEngine)
+	tracker *core.TrafficTracker
+
+	// subscriptions page
+	subList         *widget.List
+	subSel          int
+	lastAutoRefresh time.Time
+
+	// rules page
+	rulesEd *rulesEditor
 }
 
 func (g *guiState) activeNode() *core.Node {
@@ -59,20 +112,28 @@ func (g *guiState) activeNode() *core.Node {
 	return nil
 }
 
-// logf appends a timestamped GUI-side line to the log pane (the pane also
-// shows the sing-box subprocess log via Manager.Logs).
+// logf appends a timestamped GUI-side line to the log pane.
 func (g *guiState) logf(format string, args ...any) {
+	g.logMu.Lock()
+	defer g.logMu.Unlock()
 	line := time.Now().Format("15:04:05") + " " + fmt.Sprintf(format, args...)
 	g.uiLogs = append(g.uiLogs, line)
-	if len(g.uiLogs) > 100 {
-		g.uiLogs = g.uiLogs[len(g.uiLogs)-100:]
+	if len(g.uiLogs) > 200 {
+		g.uiLogs = g.uiLogs[len(g.uiLogs)-200:]
 	}
 }
 
+// fail parks an error in the sticky notice and the log: the periodic
+// refresh must never silently wipe a failure (milestone-2 lesson).
+func (g *guiState) fail(format string, args ...any) {
+	g.notice = fmt.Sprintf(format, args...)
+	g.logf("%s", g.notice)
+	g.refreshStatus()
+}
+
 // setSysProxy switches the OS proxy through the shared core
-// implementation (the same one the web dashboard uses) and keeps the
-// toggle, the internal state and the log in line. On failure the toggle
-// reverts to the real state.
+// implementation and keeps toggle/state/log in line; on failure the
+// toggle reverts to the real state.
 func (g *guiState) setSysProxy(on bool) {
 	port := g.store.Data.Cfg.MixedPort
 	if err := core.SetSystemProxy(on, port); err != nil {
@@ -91,8 +152,8 @@ func (g *guiState) setSysProxy(on bool) {
 }
 
 // clearSysProxy turns the OS proxy back off if we turned it on. Used on
-// Disconnect and before Quit, so the OS never keeps pointing at a port
-// where nothing listens anymore.
+// Disconnect, on sing-box exiting by itself, and before Quit, so the OS
+// never keeps pointing at a port where nothing listens anymore.
 func (g *guiState) clearSysProxy() {
 	if !g.sysProxy {
 		return
@@ -106,24 +167,163 @@ func (g *guiState) clearSysProxy() {
 	g.logf("System proxy off")
 }
 
-func (g *guiState) refreshStatus() {
-	running := g.mgr.Running()
-	// sing-box stopped on its own while we own the OS proxy: clear it,
-	// so the desktop does not keep pointing at a dead port.
-	if g.wasRunning && !running && g.sysProxy {
+// startProxy regenerates the config, then starts the subprocess
+// (mirrors server.Server.StartProxy via the shared core.Regen).
+func (g *guiState) startProxy() error {
+	if err := core.Regen(g.store.Data, g.workDir); err != nil {
+		return err
+	}
+	return g.mgr.Start()
+}
+
+func (g *guiState) toggle() {
+	starting := !g.mgr.Running()
+	var err error
+	if !starting {
+		err = g.mgr.Stop()
+	} else {
+		if n := g.activeNode(); n != nil {
+			g.store.Data.Cfg.ActiveNodeID = n.ID
+			_ = g.store.Save()
+		}
+		err = g.startProxy()
+	}
+	if err != nil {
+		what := "Start"
+		if !starting {
+			what = "Stop"
+		}
+		g.fail("%s failed: %v", what, err)
+		return
+	}
+	if !starting {
 		g.clearSysProxy()
 	}
+	g.notice = ""
+	g.refreshStatus()
+}
+
+// selectNode marks a node active (click in the Nodes table).
+//
+// While stopped it only changes the selection, as before. While
+// running it switches immediately, the way the web dashboard's
+// restart flow does: set active, regenerate the config, restart
+// sing-box. The system proxy stays on across the switch (the mixed
+// port does not change). If the restart fails, the selection is
+// rolled back to the previous node and the failure is parked in the
+// sticky notice -- the UI must never claim to be connected to a node
+// that is not actually running.
+func (g *guiState) selectNode(id string) {
+	prevID := g.store.Data.Cfg.ActiveNodeID
+	if id == prevID {
+		return // clicking the already-active node changes nothing
+	}
+	g.store.Data.Cfg.ActiveNodeID = id
+	_ = g.store.Save()
+	if !g.mgr.Running() {
+		g.refreshStatus()
+		if g.nodeTable != nil {
+			g.nodeTable.Refresh()
+		}
+		return
+	}
+	tag := id
+	if n := g.activeNode(); n != nil {
+		tag = n.Tag
+	}
+	g.logf("Switching to %s ...", tag)
+	_ = g.mgr.Stop()
+	if err := g.startProxy(); err != nil {
+		// Roll the selection back: sing-box is stopped and still
+		// configured for the previous node on the next manual start.
+		g.store.Data.Cfg.ActiveNodeID = prevID
+		_ = g.store.Save()
+		g.fail("Switch to %s failed (rolled back): %v", tag, err)
+		if g.nodeTable != nil {
+			g.nodeTable.Refresh()
+		}
+		return
+	}
+	g.logf("Switched to %s", tag)
+	g.notice = ""
+	g.refreshStatus()
+	if g.nodeTable != nil {
+		g.nodeTable.Refresh()
+	}
+}
+
+// showPage switches the visible page and the nav highlight.
+func (g *guiState) showPage(name string) {
+	g.current = name
+	for n, p := range g.pages {
+		if n == name {
+			p.Show()
+		} else {
+			p.Hide()
+		}
+	}
+	for n, b := range g.navBt {
+		if n == name {
+			b.Importance = widget.HighImportance
+		} else {
+			b.Importance = widget.MediumImportance
+		}
+		b.Refresh()
+	}
+	if name == pageRules && g.rulesEd != nil {
+		g.rulesEd.reload()
+	}
+	g.stack.Refresh()
+	g.refreshPage()
+}
+
+// refreshPage refreshes the visible page's dynamic content.
+func (g *guiState) refreshPage() {
+	switch g.current {
+	case pageNodes:
+		if g.nodeTable != nil {
+			g.nodeTable.Refresh()
+		}
+		g.refreshLogs()
+	case pageConns:
+		g.maybeFetchConns()
+		if g.connTable != nil {
+			g.connTable.Refresh()
+		}
+	}
+}
+
+// refreshLogs renders sing-box + GUI log lines into the Nodes log pane.
+func (g *guiState) refreshLogs() {
+	if g.logLabel == nil {
+		return
+	}
+	g.logMu.Lock()
+	guiLines := append([]string{}, g.uiLogs...)
+	g.logMu.Unlock()
+	lines := append(g.mgr.Logs(), guiLines...)
+	if len(lines) > 16 {
+		lines = lines[len(lines)-16:]
+	}
+	g.logLabel.SetText(strings.Join(lines, "\n"))
+}
+
+// refreshStatus runs once a second: process state, top bar, status bar,
+// and the visible page.
+func (g *guiState) refreshStatus() {
+	g.ticks++
+	running := g.mgr.Running()
+	if g.wasRunning && !running && g.sysProxy {
+		g.clearSysProxy() // sing-box died on its own: free the OS proxy
+	}
 	g.wasRunning = running
-	state := "Stopped"
+
 	if running {
-		state = "Running"
 		g.connBt.SetText("Disconnect")
 	} else {
 		g.connBt.SetText("Connect")
 	}
 	if g.proxySw != nil {
-		// the toggle is only meaningful while connected (or while on,
-		// so it can always be switched back off by hand)
 		if running || g.sysProxy {
 			g.proxySw.Enable()
 		} else {
@@ -134,88 +334,28 @@ func (g *guiState) refreshStatus() {
 	if n := g.activeNode(); n != nil {
 		node = n.Tag
 	}
-	txt := fmt.Sprintf("Status: %s  |  Active node: %s  |  Mixed port: %d  |  Mode: %s",
-		state, node, g.store.Data.Cfg.MixedPort, g.store.Data.Cfg.Mode)
+	g.curNode.SetText("Node: " + node)
+
+	state := "Stopped"
+	if running {
+		state = "Running"
+	}
+	txt := fmt.Sprintf("Status: %s  |  Mixed port: %d  |  Mode: %s",
+		state, g.store.Data.Cfg.MixedPort, g.store.Data.Cfg.Mode)
 	if g.notice != "" {
 		txt += "  |  " + g.notice
 	}
-	g.status.SetText(txt)
-	lines := append(g.mgr.Logs(), g.uiLogs...)
-	if len(lines) > 14 {
-		lines = lines[len(lines)-14:]
-	}
-	g.logs.SetText(strings.Join(lines, "\n"))
-}
-
-// startProxy mirrors server.Server.StartProxy: regen the config, then
-// start the subprocess.
-func (g *guiState) startProxy() error {
-	if err := g.regen(); err != nil {
-		return err
-	}
-	return g.mgr.Start()
-}
-
-// regen mirrors server.Server.regen: make sure every rule-set pack the
-// config references is downloaded, then rebuild config.json. The web
-// build ensures the CN packs (bypass-cn mode), the ads pack (BlockAds)
-// and the GFW list (GFWList); the GUI originally only fetched the CN
-// packs, so on a fresh install the first Connect referenced missing
-// .srs files and sing-box refused to start.
-func (g *guiState) regen() error {
-	if g.store.Data.Cfg.Mode == "bypass-cn" {
-		if err := core.EnsureRuleSets(g.workDir); err != nil {
-			return err
-		}
-	}
-	if g.store.Data.Cfg.BlockAds {
-		if err := core.EnsureExtraRuleSets(g.workDir, []string{"geosite-category-ads-all"}); err != nil {
-			return err
-		}
-	}
-	if g.store.Data.Cfg.GFWList {
-		if err := core.EnsureGFWList(g.workDir); err != nil {
-			return err
-		}
-	}
-	_, err := core.BuildConfig(g.store.Data, g.workDir)
-	return err
-}
-
-func (g *guiState) toggle() {
-	var err error
-	starting := !g.mgr.Running()
-	if !starting {
-		err = g.mgr.Stop()
-	} else {
-		if n := g.activeNode(); n != nil {
-			g.store.Data.Cfg.ActiveNodeID = n.ID
-		}
-		err = g.startProxy()
-	}
-	if err != nil {
-		what := "Start"
-		if !starting {
-			what = "Stop"
-		}
-		// Keep the failure visible: the 1s status refresh must not wipe
-		// it, so park it in the sticky notice and in the log pane.
-		g.notice = what + " failed: " + err.Error()
-		g.logf("%s", g.notice)
-		g.refreshStatus()
-		return
-	}
-	if !starting {
-		g.clearSysProxy()
-	}
-	g.notice = ""
-	g.refreshStatus()
+	g.statusTx.SetText(txt)
+	g.refreshRates()
+	g.maybeAutoRefreshSubs()
+	g.refreshPage()
 }
 
 func main() {
 	a := app.NewWithID("org.sbgui.native")
-	w := a.NewWindow("sbgui — sing-box manager (native PoC)")
-	w.Resize(fyne.NewSize(760, 520))
+	applyTheme(a)
+	w := a.NewWindow("sbgui — sing-box manager")
+	w.Resize(fyne.NewSize(1060, 680))
 
 	workDir := core.WorkDir()
 	store, err := core.OpenStore(workDir)
@@ -224,7 +364,6 @@ func main() {
 		w.ShowAndRun()
 		return
 	}
-	seeded := false
 	if len(store.Data.Nodes) == 0 {
 		for _, link := range demoLinks {
 			proto, ob, err := core.ParseShareLink(link)
@@ -235,18 +374,27 @@ func main() {
 				ID: core.NewID("n"), Tag: core.LinkTag(link, proto),
 				Protocol: proto, Outbound: ob, Source: "manual",
 			})
-			seeded = true
 		}
-		if seeded && store.Data.Cfg.ActiveNodeID == "" && len(store.Data.Nodes) > 0 {
+		if store.Data.Cfg.ActiveNodeID == "" && len(store.Data.Nodes) > 0 {
 			store.Data.Cfg.ActiveNodeID = store.Data.Nodes[0].ID
 		}
 	}
 
-	g := &guiState{workDir: workDir, store: store, mgr: core.NewManager(workDir)}
-	g.status = widget.NewLabel("")
-	g.logs = widget.NewLabel("")
-	g.logs.Wrapping = fyne.TextWrapBreak
+	g := &guiState{
+		app: a, win: w, workDir: workDir, store: store,
+		mgr:     core.NewManager(workDir),
+		current: pageNodes,
+		pages:   map[string]fyne.CanvasObject{},
+		navBt:   map[string]*widget.Button{},
+		delays:  map[string]healthVal{},
+		speeds:  map[string]healthVal{},
+	}
+	g.initEngine()
+
+	// --- top bar: title, current node, system proxy, connect ---
+	g.curNode = widget.NewLabel("")
 	g.connBt = widget.NewButton("Connect", g.toggle)
+	g.connBt.Importance = widget.HighImportance
 	g.proxySw = widget.NewCheck("System proxy", func(on bool) {
 		if on && !g.mgr.Running() {
 			g.logf("System proxy: connect first")
@@ -257,90 +405,75 @@ func main() {
 		g.setSysProxy(on)
 	})
 	g.proxySw.Disable()
-	rulesBt := widget.NewButton("Rules...", func() { g.openRulesWindow() })
-
-	g.list = widget.NewList(
-		func() int { return len(g.store.Data.Nodes) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(i widget.ListItemID, o fyne.CanvasObject) {
-			n := g.store.Data.Nodes[i]
-			mark := ""
-			if n.ID == g.store.Data.Cfg.ActiveNodeID {
-				mark = "  [active]"
-			}
-			o.(*widget.Label).SetText(fmt.Sprintf("%s  ·  %s%s", n.Tag, n.Protocol, mark))
-		},
+	topBar := container.NewBorder(nil, nil,
+		widget.NewLabelWithStyle("sbgui", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewHBox(g.proxySw, g.connBt),
+		g.curNode,
 	)
-	g.list.OnSelected = func(id widget.ListItemID) {
-		g.store.Data.Cfg.ActiveNodeID = g.store.Data.Nodes[id].ID
-		_ = g.store.Save()
-		g.refreshStatus()
-		g.list.Refresh()
+
+	// --- left navigation rail ---
+	navItems := []struct{ id, label string }{
+		{pageNodes, "Nodes"},
+		{pageSubs, "Subscriptions"},
+		{pageRules, "Rules"},
+		{pageConns, "Connections"},
+		{pagePrefs, "Settings"},
 	}
+	navBox := container.NewVBox()
+	for _, it := range navItems {
+		it := it
+		b := widget.NewButton(it.label, func() { g.showPage(it.id) })
+		b.Alignment = widget.ButtonAlignLeading
+		g.navBt[it.id] = b
+		navBox.Add(b)
+	}
+	navBox.Add(layout.NewSpacer())
 
-	importEntry := widget.NewEntry()
-	importEntry.SetPlaceHolder("Paste a share link (vless://, trojan://, hysteria2://, ...) and press Import")
-	importBtn := widget.NewButton("Import link", func() {
-		link := strings.TrimSpace(importEntry.Text)
-		if link == "" {
-			return
-		}
-		proto, ob, err := core.ParseShareLink(link)
-		if err != nil {
-			g.notice = "Import failed: " + err.Error()
-			g.logf("%s", g.notice)
-			g.refreshStatus()
-			return
-		}
-		g.store.Data.Nodes = append(g.store.Data.Nodes, core.Node{
-			ID: core.NewID("n"), Tag: core.LinkTag(link, proto),
-			Protocol: proto, Outbound: ob, Source: "manual",
-		})
-		_ = g.store.Save()
-		g.notice = ""
-		importEntry.SetText("")
-		g.list.Refresh()
-		g.refreshStatus()
-	})
+	// --- pages ---
+	g.pages[pageNodes] = g.buildNodesPage()
+	g.pages[pageSubs] = g.buildSubsPage()
+	g.pages[pageRules] = g.buildRulesPage()
+	g.pages[pageConns] = g.buildConnsPage()
+	g.pages[pagePrefs] = g.buildSettingsPage()
+	stackObjs := make([]fyne.CanvasObject, 0, len(navItems))
+	for _, it := range navItems {
+		stackObjs = append(stackObjs, g.pages[it.id])
+	}
+	g.stack = container.NewStack(stackObjs...)
 
-	header := container.NewVBox(
-		widget.NewLabelWithStyle("sbgui native GUI — milestone 1 PoC", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		g.status,
-	)
-	bottom := container.NewVBox(
-		container.NewBorder(nil, nil, nil, importBtn, importEntry),
-		container.NewHBox(g.connBt, g.proxySw, rulesBt),
-		widget.NewLabelWithStyle("sing-box log", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}),
-		container.NewVScroll(g.logs),
-	)
-	w.SetContent(container.NewBorder(header, bottom, nil, nil, g.list))
+	// --- bottom status bar ---
+	g.statusTx = widget.NewLabel("")
+	g.rateTx = widget.NewLabel("")
+	bottomBar := container.NewBorder(nil, nil, g.statusTx, g.rateTx, nil)
+
+	w.SetContent(container.NewBorder(topBar, bottomBar, navBox, nil, g.stack))
+
+	g.showPage(pageNodes)
 	g.refreshStatus()
-	if seeded {
-		g.status.SetText(g.status.Text + "  |  (demo nodes seeded — store was empty)")
+
+	// Auto-start the proxy on launch when the setting says so
+	// (the web build honours cfg.AutoStart the same way).
+	if store.Data.Cfg.AutoStart && len(store.Data.Nodes) > 0 {
+		if err := g.startProxy(); err != nil {
+			g.fail("Auto-start failed: %v", err)
+		} else {
+			g.logf("Proxy auto-started")
+			g.refreshStatus()
+		}
 	}
 
-	// System tray: Show / Quit. Closing the window hides it to the tray.
+	// System tray: Show / Quit. Closing the window hides to the tray.
 	if desk, ok := a.(desktop.App); ok {
 		menu := fyne.NewMenu("sbgui",
 			fyne.NewMenuItem("Show", func() { w.Show() }),
 			fyne.NewMenuItem("Quit", func() {
-				// like the web build's /api/quit: stop sing-box first,
-				// and never leave the OS proxy pointing at a dead port
-				if g.sysProxy {
-					_ = core.SetSystemProxy(false, g.store.Data.Cfg.MixedPort)
-					g.sysProxy = false
-				}
-				if g.mgr.Running() {
-					_ = g.mgr.Stop()
-				}
-				a.Quit()
+				g.quit()
 			}),
 		)
 		desk.SetSystemTrayMenu(menu)
 		w.SetCloseIntercept(func() { w.Hide() })
 	}
 
-	// Poll process state + logs once a second.
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
@@ -350,4 +483,18 @@ func main() {
 	}()
 
 	w.ShowAndRun()
+}
+
+// quit stops the engine in the right order: clear the OS proxy first,
+// then stop sing-box, then flush per-node traffic totals.
+func (g *guiState) quit() {
+	if g.sysProxy {
+		_ = core.SetSystemProxy(false, g.store.Data.Cfg.MixedPort)
+		g.sysProxy = false
+	}
+	if g.mgr.Running() {
+		_ = g.mgr.Stop()
+	}
+	g.stopEngine()
+	g.app.Quit()
 }

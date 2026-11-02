@@ -13,7 +13,7 @@ import (
 	"github.com/Chuang2016/singbox-gui/core"
 )
 
-// Rules editor window. It mirrors the web dashboard "Routing rules"
+// Rules page. It mirrors the web dashboard "Routing rules"
 // card exactly: the same core.Settings fields (Mode, BlockAds, GFWList,
 // UserDomains/UserIPs + their outbounds, CustomRules), the same value
 // sets, and the same save semantics -- write the store, then, if
@@ -130,7 +130,6 @@ func (g *guiState) restartProxy() {
 
 type rulesEditor struct {
 	g *guiState
-	w fyne.Window
 
 	modeSel *widget.Select
 	adsCk   *widget.Check
@@ -148,12 +147,14 @@ type rulesEditor struct {
 	staged []core.CustomRule // working copy, committed on Save
 }
 
-func (g *guiState) openRulesWindow() {
+// buildRulesPage turns the milestone-2 rules editor window into the
+// Rules page of the new shell (same widgets, same staged-edit + save
+// semantics, no separate window).
+func (g *guiState) buildRulesPage() fyne.CanvasObject {
 	cfg := g.store.Data.Cfg
 	e := &rulesEditor{g: g}
 	e.staged = append([]core.CustomRule{}, cfg.CustomRules...)
-	e.w = fyne.CurrentApp().NewWindow("Routing rules")
-	e.w.Resize(fyne.NewSize(700, 680))
+	g.rulesEd = e
 
 	e.modeSel = widget.NewSelect(labelsOf(modeOptions), nil)
 	e.modeSel.SetSelected(labelFor(modeOptions, cfg.Mode))
@@ -199,7 +200,7 @@ func (g *guiState) openRulesWindow() {
 		kind := valueFor(kindOptions, e.kindSel.Selected)
 		v := strings.TrimSpace(e.valEntry.Text)
 		if err := validateRule(kind, v); err != nil {
-			dialog.ShowError(err, e.w)
+			dialog.ShowError(err, e.g.win)
 			return
 		}
 		e.staged = append(e.staged, core.CustomRule{
@@ -211,7 +212,6 @@ func (g *guiState) openRulesWindow() {
 
 	saveBtn := widget.NewButton("Save & apply", func() { e.save() })
 	saveBtn.Importance = widget.HighImportance
-	closeBtn := widget.NewButton("Close", func() { e.w.Close() })
 
 	top := container.NewVBox(
 		widget.NewLabelWithStyle("Mode", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -227,10 +227,24 @@ func (g *guiState) openRulesWindow() {
 	bottom := container.NewVBox(
 		container.NewBorder(nil, nil, e.kindSel, addBtn,
 			container.NewBorder(nil, nil, nil, e.outSel, e.valEntry)),
-		container.NewHBox(saveBtn, closeBtn),
+		container.NewHBox(saveBtn),
 	)
-	e.w.SetContent(container.NewBorder(top, bottom, nil, nil, e.ruleList))
-	e.w.Show()
+	return container.NewBorder(top, bottom, nil, nil, e.ruleList)
+}
+
+// reload re-reads the settings into the widgets (the page is built
+// once; Settings or a restart may have changed values since).
+func (e *rulesEditor) reload() {
+	cfg := e.g.store.Data.Cfg
+	e.modeSel.SetSelected(labelFor(modeOptions, cfg.Mode))
+	e.adsCk.SetChecked(cfg.BlockAds)
+	e.gfwCk.SetChecked(cfg.GFWList)
+	e.udText.SetText(cfg.UserDomains)
+	e.udObSel.SetSelected(labelFor(outboundOptions, cfg.UserDomainOb))
+	e.uiText.SetText(cfg.UserIPs)
+	e.uiObSel.SetSelected(labelFor(outboundOptions, cfg.UserIPOb))
+	e.staged = append([]core.CustomRule{}, cfg.CustomRules...)
+	e.ruleList.Refresh()
 }
 
 // save validates and commits the staged edits to the store, then follows
@@ -239,12 +253,12 @@ func (g *guiState) openRulesWindow() {
 func (e *rulesEditor) save() {
 	for _, r := range e.staged {
 		if err := validateRule(r.Kind, r.Value); err != nil {
-			dialog.ShowError(err, e.w)
+			dialog.ShowError(err, e.g.win)
 			return
 		}
 	}
 	if err := validateIPList(e.uiText.Text); err != nil {
-		dialog.ShowError(err, e.w)
+		dialog.ShowError(err, e.g.win)
 		return
 	}
 	cfg := &e.g.store.Data.Cfg
@@ -257,19 +271,18 @@ func (e *rulesEditor) save() {
 	cfg.UserIPOb = valueFor(outboundOptions, e.uiObSel.Selected)
 	cfg.CustomRules = append([]core.CustomRule{}, e.staged...)
 	if err := e.g.store.Save(); err != nil {
-		dialog.ShowError(err, e.w)
+		dialog.ShowError(err, e.g.win)
 		return
 	}
 	e.g.logf("Rules saved (mode %s, %d custom rules)", cfg.Mode, len(cfg.CustomRules))
+	e.g.notice = "Rules saved"
 	e.g.refreshStatus()
 	if !e.g.mgr.Running() {
-		e.w.Close()
 		return
 	}
 	dialog.ShowConfirm("Rules saved", "Restart sing-box to apply the new rules?", func(ok bool) {
 		if ok {
 			e.g.restartProxy()
 		}
-		e.w.Close()
-	}, e.w)
+	}, e.g.win)
 }

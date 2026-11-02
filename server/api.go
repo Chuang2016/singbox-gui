@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -37,7 +36,7 @@ func New(store *core.Store, mgr *core.Manager, workDir string) *Server {
 		delays: map[string]nodeHealth{}, speeds: map[string]nodeHealth{},
 		traffic: newTrafficTracker(workDir)}
 	s.routes()
-	go s.traffic.loop(s)
+	go s.traffic.Loop(s.mgr.Running, func() int { return s.store.Data.Cfg.ClashPort })
 	return s
 }
 
@@ -92,7 +91,7 @@ func (s *Server) routes() {
 		go func() {
 			time.Sleep(300 * time.Millisecond)
 			_ = s.mgr.Stop()
-			s.traffic.save()
+			s.traffic.Save()
 			os.Exit(0)
 		}()
 		writeJSON(w, map[string]string{"ok": "bye"})
@@ -106,20 +105,9 @@ func (s *Server) routes() {
 			w.WriteHeader(405)
 			return
 		}
-		dir := core.RuleSetDir(s.workDir)
-		names := []string{"geosite-cn.srs", "geoip-cn.srs", "geosite-category-ads-all.srs", "gfwlist.json"}
-		for _, f := range names {
-			_ = os.Rename(filepath.Join(dir, f), filepath.Join(dir, f+".bak"))
-		}
-		if err := s.regen(); err != nil {
-			for _, f := range names { // restore backups
-				_ = os.Rename(filepath.Join(dir, f+".bak"), filepath.Join(dir, f))
-			}
+		if err := core.RefreshRuleSets(s.workDir, s.regen); err != nil {
 			writeErr(w, err)
 			return
-		}
-		for _, f := range names {
-			_ = os.Remove(filepath.Join(dir, f+".bak"))
 		}
 		writeJSON(w, map[string]any{"ok": "refreshed", "rulesets": core.RuleSetInfo(s.workDir)})
 	})
@@ -238,7 +226,7 @@ func (s *Server) routes() {
 					m["speed_at"] = h.At
 					m["speed_ok"] = h.OK
 				}
-				m["traffic_bytes"] = s.traffic.total(n.ID)
+				m["traffic_bytes"] = s.traffic.Total(n.ID)
 				out = append(out, m)
 			}
 			s.healthMu.Unlock()
@@ -285,7 +273,7 @@ func (s *Server) routes() {
 			w.WriteHeader(405)
 			return
 		}
-		s.traffic.reset()
+		s.traffic.Reset()
 		writeJSON(w, map[string]string{"ok": "reset"})
 	})
 
@@ -594,59 +582,11 @@ func (s *Server) routes() {
 }
 
 func (s *Server) regen() error {
-	// local rule-sets are downloaded by sbgui via mirrors (no proxy needed)
-	if s.store.Data.Cfg.Mode == "bypass-cn" {
-		if err := core.EnsureRuleSets(s.workDir); err != nil {
-			return err
-		}
-	}
-	if s.store.Data.Cfg.BlockAds {
-		if err := core.EnsureExtraRuleSets(s.workDir, []string{"geosite-category-ads-all"}); err != nil {
-			return err
-		}
-	}
-	if s.store.Data.Cfg.GFWList {
-		if err := core.EnsureGFWList(s.workDir); err != nil {
-			return err
-		}
-	}
-	_, err := core.BuildConfig(s.store.Data, s.workDir)
-	return err
+	return core.Regen(s.store.Data, s.workDir)
 }
 
 func (s *Server) refreshSub(id string) (int, error) {
-	var sub *core.Subscription
-	for i := range s.store.Data.Subs {
-		if s.store.Data.Subs[i].ID == id {
-			sub = &s.store.Data.Subs[i]
-			break
-		}
-	}
-	if sub == nil {
-		return 0, fmt.Errorf("subscription not found")
-	}
-	obs, tags, protos, err := core.FetchSubscription(sub.URL)
-	if err != nil {
-		return 0, err
-	}
-	// drop old nodes from this sub
-	kept := s.store.Data.Nodes[:0]
-	for _, n := range s.store.Data.Nodes {
-		if n.Source != "sub:"+id {
-			kept = append(kept, n)
-		}
-	}
-	s.store.Data.Nodes = kept
-	for i, ob := range obs {
-		s.store.Data.Nodes = append(s.store.Data.Nodes, core.Node{
-			ID: core.NewID("n"), Tag: tags[i], Protocol: protos[i],
-			Outbound: ob, Source: "sub:" + id,
-		})
-	}
-	sub.Count = len(obs)
-	sub.UpdatedAt = time.Now().Format("2006-01-02 15:04")
-	_ = s.store.Save()
-	return len(obs), nil
+	return core.RefreshSubscription(s.store, id)
 }
 
 func (s *Server) clashProxy() http.HandlerFunc {

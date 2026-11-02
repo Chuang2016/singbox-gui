@@ -20,14 +20,14 @@ func SetSystemProxy(enable bool, port int) error {
 	case "windows":
 		key := `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings`
 		if enable {
-			if out, err := exec.Command("reg", "add", key, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f").CombinedOutput(); err != nil {
+			if out, err := quietCommand("reg", "add", key, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "1", "/f").CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
-			if out, err := exec.Command("reg", "add", key, "/v", "ProxyServer", "/t", "REG_SZ", "/d", addr, "/f").CombinedOutput(); err != nil {
+			if out, err := quietCommand("reg", "add", key, "/v", "ProxyServer", "/t", "REG_SZ", "/d", addr, "/f").CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
 		} else {
-			if out, err := exec.Command("reg", "add", key, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f").CombinedOutput(); err != nil {
+			if out, err := quietCommand("reg", "add", key, "/v", "ProxyEnable", "/t", "REG_DWORD", "/d", "0", "/f").CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
 		}
@@ -35,18 +35,18 @@ func SetSystemProxy(enable bool, port int) error {
 	case "darwin":
 		svc := "Wi-Fi"
 		if enable {
-			if out, err := exec.Command("networksetup", "-setwebproxy", svc, "127.0.0.1", fmt.Sprint(port)).CombinedOutput(); err != nil {
+			if out, err := quietCommand("networksetup", "-setwebproxy", svc, "127.0.0.1", fmt.Sprint(port)).CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
-			if out, err := exec.Command("networksetup", "-setsecurewebproxy", svc, "127.0.0.1", fmt.Sprint(port)).CombinedOutput(); err != nil {
+			if out, err := quietCommand("networksetup", "-setsecurewebproxy", svc, "127.0.0.1", fmt.Sprint(port)).CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
-			if out, err := exec.Command("networksetup", "-setsocksfirewallproxy", svc, "127.0.0.1", fmt.Sprint(port)).CombinedOutput(); err != nil {
+			if out, err := quietCommand("networksetup", "-setsocksfirewallproxy", svc, "127.0.0.1", fmt.Sprint(port)).CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
 		} else {
 			for _, a := range [][]string{{"-setwebproxystate", svc, "off"}, {"-setsecurewebproxystate", svc, "off"}, {"-setsocksfirewallproxystate", svc, "off"}} {
-				if out, err := exec.Command("networksetup", a...).CombinedOutput(); err != nil {
+				if out, err := quietCommand("networksetup", a...).CombinedOutput(); err != nil {
 					return fmt.Errorf("%v: %s", err, out)
 				}
 			}
@@ -58,7 +58,7 @@ func SetSystemProxy(enable bool, port int) error {
 			return fmt.Errorf("gsettings not found (non-GNOME desktop?); set http_proxy/https_proxy manually to http://%s", addr)
 		}
 		run := func(args ...string) error {
-			if out, err := exec.Command("gsettings", args...).CombinedOutput(); err != nil {
+			if out, err := quietCommand("gsettings", args...).CombinedOutput(); err != nil {
 				return fmt.Errorf("%v: %s", err, out)
 			}
 			return nil

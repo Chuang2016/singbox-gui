@@ -40,7 +40,7 @@ func singboxBin(workDir string) string {
 // Check validates config.json with `sing-box check`.
 func (m *Manager) Check() (string, error) {
 	bin := singboxBin(m.workDir)
-	out, err := exec.Command(bin, "check", "-c", filepath.Join(m.workDir, "config.json")).CombinedOutput()
+	out, err := quietCommand(bin, "check", "-c", filepath.Join(m.workDir, "config.json")).CombinedOutput()
 	return string(out), err
 }
 
@@ -80,7 +80,7 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("config check failed: %v\n%s", err, out)
 	}
 	bin := singboxBin(m.workDir)
-	cmd := exec.Command(bin, "run", "-c", filepath.Join(m.workDir, "config.json"))
+	cmd := quietCommand(bin, "run", "-c", filepath.Join(m.workDir, "config.json"))
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start sing-box: %w (is sing-box binary next to sbgui?)", err)
