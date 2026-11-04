@@ -30,6 +30,8 @@ func ParseShareLink(link string) (string, map[string]any, error) {
 		return parseHysteria2(link)
 	case strings.HasPrefix(link, "tuic://"):
 		return parseTuic(link)
+	case strings.HasPrefix(link, "anytls://"):
+		return parseAnytls(link)
 	default:
 		return "", nil, fmt.Errorf("unsupported scheme")
 	}
@@ -192,6 +194,13 @@ func applyStream(ob map[string]any, net_, type_, host, path, tls, sni, alpn, fp,
 			t["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
 		}
 		if tls == "reality" {
+			if _, ok := t["utls"]; !ok {
+				// sing-box fatals at startup when a REALITY outbound has
+				// no uTLS ("uTLS is required by reality client"), which
+				// takes down the whole config. Many exported links omit
+				// fp=, so default to chrome like other clients do.
+				t["utls"] = map[string]any{"enabled": true, "fingerprint": "chrome"}
+			}
 			t["reality"] = map[string]any{"enabled": true}
 			if pbk != "" {
 				t["reality"].(map[string]any)["public_key"] = pbk
@@ -446,4 +455,47 @@ func LinkTag(link, proto string) string {
 		}
 	}
 	return ""
+}
+
+// ---------- anytls ----------
+
+func parseAnytls(link string) (string, map[string]any, error) {
+	rest := strings.TrimPrefix(link, "anytls://")
+	if i := strings.Index(rest, "?"); i >= 0 {
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, "#"); i >= 0 {
+		rest = rest[:i]
+	}
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return "", nil, fmt.Errorf("anytls bad format")
+	}
+	password, _ := url.PathUnescape(rest[:at])
+	host, port, err := splitHostPort(rest[at+1:])
+	if err != nil {
+		return "", nil, fmt.Errorf("anytls hostport: %w", err)
+	}
+	u, _ := url.Parse(link)
+	q := u.Query()
+	tls := map[string]any{"enabled": true}
+	if sni := q.Get("sni"); sni != "" {
+		tls["server_name"] = sni
+	} else {
+		tls["server_name"] = host
+	}
+	if q.Get("insecure") == "1" || q.Get("allowInsecure") == "1" {
+		tls["insecure"] = true
+	}
+	if alpn := q.Get("alpn"); alpn != "" {
+		tls["alpn"] = strings.Split(alpn, ",")
+	}
+	if fp := q.Get("fp"); fp != "" {
+		tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+	}
+	ob := map[string]any{
+		"type": "anytls", "server": host, "server_port": port,
+		"password": password, "tls": tls,
+	}
+	return "anytls", ob, nil
 }

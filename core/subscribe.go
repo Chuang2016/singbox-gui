@@ -210,6 +210,11 @@ func clashTLS(p clashProxy, server string) map[string]any {
 		t["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
 	}
 	if p.RealityOpts != nil {
+		if _, ok := t["utls"]; !ok {
+			// see links.go: a REALITY outbound without uTLS makes
+			// sing-box refuse to start; default to chrome.
+			t["utls"] = map[string]any{"enabled": true, "fingerprint": "chrome"}
+		}
 		r := map[string]any{"enabled": true}
 		if pk, ok := p.RealityOpts["public-key"].(string); ok {
 			r["public_key"] = pk
@@ -305,6 +310,29 @@ func clashToOutbound(p clashProxy) (map[string]any, string) {
 		}
 		base["tls"] = tls
 		return base, "hysteria2"
+	case "anytls":
+		base["type"] = "anytls"
+		base["password"] = p.Password
+		if tls == nil {
+			// anytls is always TLS-based; mihomo entries often carry
+			// no explicit tls flag, so build the block from sni/alpn.
+			sni := p.SNI
+			if sni == "" {
+				sni = p.ServerName
+			}
+			if sni == "" {
+				sni = p.Server
+			}
+			tls = map[string]any{"enabled": true, "server_name": sni}
+			if p.SkipCertVerify {
+				tls["insecure"] = true
+			}
+			if len(p.Alpn) > 0 {
+				tls["alpn"] = p.Alpn
+			}
+		}
+		base["tls"] = tls
+		return base, "anytls"
 	case "tuic":
 		base["type"] = "tuic"
 		base["uuid"] = p.UUID
