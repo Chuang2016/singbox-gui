@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 )
@@ -28,11 +29,47 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		}
 	}
 
+	// privproto nodes are not sing-box outbounds: each is served by a
+	// privproto-client subprocess exposing a local SOCKS5 port, which
+	// the Manager launches alongside sing-box (see core/privproto.go).
+	// The generated outbound is a plain socks outbound pointing at
+	// that port. Ports are probed free here (all listeners held until
+	// every port is assigned, then released) and read back from the
+	// written config.json by the Manager at start time. The privproto
+	// password never enters the sing-box config.
+	ppPorts := map[string]int{}
+	var ppLn []net.Listener
+	for _, n := range d.Nodes {
+		if !IsPrivprotoNode(n) {
+			continue
+		}
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			for _, l := range ppLn {
+				l.Close()
+			}
+			return "", fmt.Errorf("privproto: reserve local port: %w", err)
+		}
+		ppLn = append(ppLn, ln)
+		ppPorts[n.ID] = ln.Addr().(*net.TCPAddr).Port
+	}
+	for _, l := range ppLn {
+		l.Close()
+	}
+
 	outbounds := []any{}
 	for _, n := range d.Nodes {
-		ob := map[string]any{}
-		for k, v := range n.Outbound {
-			ob[k] = v
+		var ob map[string]any
+		if IsPrivprotoNode(n) {
+			ob = map[string]any{
+				"type": "socks", "server": "127.0.0.1",
+				"server_port": ppPorts[n.ID], "version": "5",
+			}
+		} else {
+			ob = map[string]any{}
+			for k, v := range n.Outbound {
+				ob[k] = v
+			}
 		}
 		ob["tag"] = tagOf[n.ID]
 		outbounds = append(outbounds, ob)
@@ -156,7 +193,7 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 			"rules":   dnsRules,
 			"final":   dnsFinal,
 		},
-		"inbounds": inbounds,
+		"inbounds":  inbounds,
 		"outbounds": outbounds,
 		"route": map[string]any{
 			"rules":                   rules,

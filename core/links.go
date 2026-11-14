@@ -32,6 +32,8 @@ func ParseShareLink(link string) (string, map[string]any, error) {
 		return parseTuic(link)
 	case strings.HasPrefix(link, "anytls://"):
 		return parseAnytls(link)
+	case strings.HasPrefix(link, "privproto://"):
+		return parsePrivproto(link)
 	default:
 		return "", nil, fmt.Errorf("unsupported scheme")
 	}
@@ -455,6 +457,57 @@ func LinkTag(link, proto string) string {
 		}
 	}
 	return ""
+}
+
+// ---------- privproto ----------
+
+// parsePrivproto parses privproto://<password>@<host>:<port>#<name>.
+// privproto is not a sing-box protocol: the stored fragment (type
+// "privproto") carries the parameters for the standalone
+// privproto-client, and BuildConfig translates the node into a plain
+// socks outbound pointing at that client's local port (see
+// core/privproto.go for the runtime side).
+func parsePrivproto(link string) (string, map[string]any, error) {
+	rest := strings.TrimPrefix(link, "privproto://")
+	if i := strings.Index(rest, "?"); i >= 0 {
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, "#"); i >= 0 {
+		rest = rest[:i]
+	}
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return "", nil, fmt.Errorf("privproto bad format")
+	}
+	password, _ := url.PathUnescape(rest[:at])
+	if password == "" {
+		return "", nil, fmt.Errorf("privproto missing password")
+	}
+	host, port, err := splitHostPort(rest[at+1:])
+	if err != nil {
+		return "", nil, fmt.Errorf("privproto hostport: %w", err)
+	}
+	if host == "" {
+		return "", nil, fmt.Errorf("privproto missing host")
+	}
+	ob := map[string]any{
+		"type": "privproto", "server": host, "server_port": port,
+		"password": password,
+	}
+	return "privproto", ob, nil
+}
+
+// BuildPrivprotoLink renders a privproto share link from its parts,
+// URL-escaping the password (and the display name) so passwords with
+// URL-significant characters (@ # : / ...) survive the round trip.
+func BuildPrivprotoLink(password, host string, port int, name string) string {
+	u := url.URL{
+		Scheme:   "privproto",
+		User:     url.User(password),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
+		Fragment: name,
+	}
+	return u.String()
 }
 
 // ---------- anytls ----------

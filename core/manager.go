@@ -12,13 +12,18 @@ import (
 	"time"
 )
 
-// Manager controls the sing-box subprocess.
+// Manager controls the sing-box subprocess and, for privproto
+// nodes, the privproto-client subprocesses that front it
+// (see privproto.go).
 type Manager struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	workDir string
 	logs    []string
 	running bool
+
+	ppMu      sync.Mutex
+	ppClients []*privprotoClient
 }
 
 func NewManager(workDir string) *Manager {
@@ -79,10 +84,16 @@ func (m *Manager) Start() error {
 	if out, err := m.Check(); err != nil {
 		return fmt.Errorf("config check failed: %v\n%s", err, out)
 	}
+	// privproto clients must be accepting before sing-box starts
+	// routing through their socks outbounds.
+	if err := m.startPrivprotoClients(); err != nil {
+		return err
+	}
 	bin := singboxBin(m.workDir)
 	cmd := quietCommand(bin, "run", "-c", filepath.Join(m.workDir, "config.json"))
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
+		m.stopPrivprotoClients()
 		return fmt.Errorf("start sing-box: %w (is sing-box binary next to sbgui?)", err)
 	}
 	m.mu.Lock()
@@ -102,6 +113,9 @@ func (m *Manager) Start() error {
 		m.running = false
 		m.cmd = nil
 		m.mu.Unlock()
+		// sing-box is gone (stopped or died on its own): the
+		// privproto clients it fronted have nothing left to serve.
+		m.stopPrivprotoClients()
 		if err != nil {
 			m.pushLog(fmt.Sprintf("sing-box exited: %v", err))
 		} else {
@@ -114,6 +128,7 @@ func (m *Manager) Start() error {
 	ok := m.running
 	m.mu.Unlock()
 	if !ok {
+		m.stopPrivprotoClients()
 		logs := m.Logs()
 		tail := ""
 		if len(logs) > 0 {
@@ -128,6 +143,9 @@ func (m *Manager) Stop() error {
 	m.mu.Lock()
 	cmd := m.cmd
 	m.mu.Unlock()
+	// The privproto clients belong to the session: they are torn
+	// down even when sing-box itself is already gone.
+	defer m.stopPrivprotoClients()
 	if cmd == nil || cmd.Process == nil {
 		return fmt.Errorf("not running")
 	}

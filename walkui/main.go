@@ -28,7 +28,7 @@ import (
 )
 
 // version of the native front-end build (preview line).
-const version = "1.1.0-gui-preview.4"
+const version = "1.1.0-gui-preview.5"
 
 func fatalBox(title, text string) {
 	walk.MsgBox(nil, title, text, walk.MsgBoxIconError|walk.MsgBoxOK)
