@@ -2,14 +2,12 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -344,48 +342,9 @@ func (s *Server) routes() {
 				writeErr(w, err)
 				return
 			}
-			if req.Outbound == nil {
-				writeErr(w, fmt.Errorf("outbound must be a JSON object"))
-				return
-			}
-			if t, _ := req.Outbound["type"].(string); t == "" {
-				writeErr(w, fmt.Errorf("outbound.type is required"))
-				return
-			}
-			delete(req.Outbound, "tag") // internal tag is forced at config build
-			// snapshot for rollback: a rejected edit must not persist
-			old := s.store.Data.Nodes[idx]
-			oldOutbound := map[string]any{}
-			if raw, err := json.Marshal(old.Outbound); err == nil {
-				_ = json.Unmarshal(raw, &oldOutbound)
-			}
-			rollback := func() {
-				s.store.Data.Nodes[idx].Outbound = oldOutbound
-				s.store.Data.Nodes[idx].Tag = old.Tag
-				s.store.Data.Nodes[idx].Protocol = old.Protocol
-				_ = s.store.Save()
-				_ = s.regen()
-			}
-			s.store.Data.Nodes[idx].Outbound = req.Outbound
-			s.store.Data.Nodes[idx].Protocol, _ = req.Outbound["type"].(string)
-			if strings.TrimSpace(req.Name) != "" {
-				s.store.Data.Nodes[idx].Tag = strings.TrimSpace(req.Name)
-			}
-			_ = s.store.Save()
-			if err := s.regen(); err != nil {
-				rollback()
+			if err := core.UpdateNode(s.store, s.mgr, s.workDir, id, req.Name, req.Outbound); err != nil {
 				writeErr(w, err)
 				return
-			}
-			// validate the rebuilt config so a bad edit is reported immediately
-			// (skipped silently when no sing-box binary exists yet)
-			if out, err := s.mgr.Check(); err != nil {
-				var execErr *exec.Error
-				if !errors.As(err, &execErr) {
-					rollback()
-					writeErr(w, fmt.Errorf("edit rejected by sing-box (rolled back): %v %s", err, out))
-					return
-				}
 			}
 			writeJSON(w, map[string]string{"ok": "saved"})
 			return

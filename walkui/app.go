@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/lxn/walk"
-	. "github.com/lxn/walk/declarative"
 
 	"github.com/Chuang2016/singbox-gui/core"
 	"github.com/Chuang2016/singbox-gui/server"
@@ -63,6 +62,43 @@ type app struct {
 
 	delayMu sync.Mutex
 	delays  map[string]int // nodeID -> ms, -1 = timeout; absent = untested
+	speeds  map[string]float64
+	speedOK map[string]bool
+
+	// node table sorting (header clicks): "" = manual order
+	sortKey  string // "name" | "latency" | "speed" | "traffic"
+	sortDesc bool
+
+	tabs    *walk.TabWidget
+	rateLbl *walk.Label
+
+	// rules page widgets (values loaded by initRulesPage/reloadRules)
+	rulesReady  bool
+	stagedRules []core.CustomRule // working copy, committed by Save rules
+	adsChk      *walk.CheckBox
+	gfwChk      *walk.CheckBox
+	autoChk     *walk.CheckBox
+	gwChk       *walk.CheckBox
+	autoUpdEd   *walk.NumberEdit
+	udText      *walk.TextEdit
+	uiText      *walk.TextEdit
+	udObCmb     *walk.ComboBox
+	uiObCmb     *walk.ComboBox
+	ruleList    *walk.ListBox
+	ruleModel   *ruleModel
+	rKindCmb    *walk.ComboBox
+	rOutCmb     *walk.ComboBox
+	rValEd      *walk.LineEdit
+	rsInfoLbl   *walk.Label
+	rsTgtCmb    *walk.ComboBox
+	rsUrlEd     *walk.LineEdit
+
+	// connections page
+	connTable     *walk.TableView
+	connModel     *connModel
+	connInfoLbl   *walk.Label
+	conns         []core.Connection
+	lastConnFetch time.Time
 
 	subList         *walk.ListBox
 	subModel        *subModel
@@ -72,139 +108,16 @@ type app struct {
 func newApp(store *core.Store, mgr *core.Manager, srv *server.Server, workDir string, port int) *app {
 	a := &app{
 		store: store, mgr: mgr, srv: srv, workDir: workDir, port: port,
-		done:   make(chan struct{}),
-		delays: map[string]int{},
+		done:    make(chan struct{}),
+		delays:  map[string]int{},
+		speeds:  map[string]float64{},
+		speedOK: map[string]bool{},
 	}
 	a.model = &nodeModel{a: a}
+	a.connModel = &connModel{a: a}
+	a.ruleModel = &ruleModel{a: a}
 	a.icon = loadIcon()
 	return a
-}
-
-func (a *app) buildWindow() error {
-	def := MainWindow{
-		AssignTo: &a.mw,
-		Title:    "sbgui",
-		MinSize:  Size{Width: 760, Height: 500},
-		Size:     Size{Width: 1020, Height: 660},
-		Font:     Font{Family: "Segoe UI", PointSize: 9},
-		Layout:   VBox{Margins: Margins{Left: 8, Top: 8, Right: 8, Bottom: 8}, Spacing: 6},
-		StatusBarItems: []StatusBarItem{
-			{AssignTo: &a.sbStatus, Text: "Stopped", Width: 120},
-			{AssignTo: &a.sbNode, Text: "Node: none", Width: 330},
-			{AssignTo: &a.sbPorts, Text: "", Width: 210},
-			{AssignTo: &a.sbRates, Text: "", Width: 230},
-		},
-		Children: []Widget{
-			Composite{
-				Layout: HBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					PushButton{
-						AssignTo:  &a.connBtn,
-						Text:      "Connect",
-						MinSize:   Size{Width: 110},
-						OnClicked: func() { a.toggle() },
-					},
-					CheckBox{
-						AssignTo: &a.proxyChk,
-						Text:     "System proxy",
-						Enabled:  false,
-					},
-					Label{Text: "Mode:"},
-					ComboBox{
-						AssignTo: &a.modeCmb,
-						Model:    []string{"Bypass CN", "Global proxy", "Global direct"},
-						MinSize:  Size{Width: 130},
-					},
-					PushButton{
-						Text:      "Test node",
-						OnClicked: func() { a.testLatencySelected() },
-					},
-					PushButton{
-						Text:      "Test all",
-						OnClicked: func() { a.testLatencyAll() },
-					},
-					HSpacer{},
-					PushButton{
-						Text:      "Open web back-end",
-						OnClicked: func() { a.openInBrowser() },
-					},
-				},
-			},
-			HSplitter{
-				Children: []Widget{
-					Composite{
-						AssignTo: &a.railBox,
-						Layout:   VBox{MarginsZero: true, Spacing: 6},
-						MinSize:  Size{Width: 220},
-						MaxSize:  Size{Width: 320},
-						Children: []Widget{
-							Label{
-								Text: "Subscriptions",
-								Font: Font{Family: "Segoe UI", PointSize: 9, Bold: true},
-							},
-						},
-					},
-					TableView{
-						AssignTo: &a.table,
-						Model:    a.model,
-						Columns: []TableViewColumn{
-							{Title: "", Width: 26},
-							{Title: "Name", Width: 300},
-							{Title: "Protocol", Width: 90},
-							{Title: "Latency", Width: 84},
-							{Title: "Traffic", Width: 110},
-						},
-					},
-				},
-			},
-			Composite{
-				Layout: HBox{MarginsZero: true, Spacing: 6},
-				Children: []Widget{
-					LineEdit{
-						AssignTo:  &a.importEd,
-						CueBanner: "Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto)...",
-					},
-					PushButton{
-						Text:      "Import",
-						MinSize:   Size{Width: 90},
-						OnClicked: func() { a.importLinks() },
-					},
-				},
-			},
-			TextEdit{
-				AssignTo: &a.logEd,
-				ReadOnly: true,
-				VScroll:  true,
-				MinSize:  Size{Height: 92},
-				MaxSize:  Size{Height: 150},
-			},
-		},
-	}
-	if err := def.Create(); err != nil {
-		return err
-	}
-	if a.icon != nil {
-		_ = a.mw.SetIcon(a.icon)
-	}
-	_ = a.mw.SetTitle("sbgui " + version)
-	a.table.CurrentIndexChanged().Attach(func() { a.onRowSelected() })
-	a.proxyChk.CheckedChanged().Attach(func() { a.onProxyToggle() })
-	a.modeCmb.CurrentIndexChanged().Attach(func() { a.onModeChanged() })
-	_ = a.modeCmb.SetCurrentIndex(modeIndex(a.store.Data.Cfg.Mode))
-	a.ready = true
-	// Closing the window parks the app in the tray; only the tray's
-	// Quit (or an explicit quit) actually exits.
-	a.mw.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
-		if !a.quitting {
-			*canceled = true
-			a.mw.Hide()
-		}
-	})
-	a.initSubRail()
-	a.lastNodeCount = len(a.store.Data.Nodes)
-	a.syncTableSelection()
-	a.refreshStatus()
-	return nil
 }
 
 // ---------- tray ----------
@@ -458,8 +371,14 @@ func (a *app) tick() {
 		if running {
 			up, down := tr.Rates()
 			a.sbRates.SetText(fmt.Sprintf("Down %s | Up %s", humanRate(down), humanRate(up)))
+			if a.rateLbl != nil {
+				a.rateLbl.SetText(fmt.Sprintf("Down %s  |  Up %s", humanRate(down), humanRate(up)))
+			}
 		} else if a.sbRates.Text() != "" {
 			a.sbRates.SetText("")
+			if a.rateLbl != nil {
+				a.rateLbl.SetText("")
+			}
 		}
 		var sum int64
 		for _, n := range a.store.Data.Nodes {
@@ -477,6 +396,10 @@ func (a *app) tick() {
 		a.lastNodeCount = len(a.store.Data.Nodes)
 		a.model.PublishRowsReset()
 		a.syncTableSelection()
+	}
+	// Connections tab auto-refresh (throttled inside).
+	if a.tabs != nil && a.tabs.CurrentIndex() == 2 {
+		a.fetchConnsAsync(false)
 	}
 	a.refreshLogs()
 	a.maybeAutoRefreshSubs()

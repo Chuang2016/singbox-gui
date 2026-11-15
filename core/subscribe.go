@@ -132,26 +132,26 @@ func parseSingboxJSON(text string) ([]map[string]any, []string, []string, error)
 // ---------- clash yaml ----------
 
 type clashProxy struct {
-	Name           string         `yaml:"name"`
-	Type           string         `yaml:"type"`
-	Server         string         `yaml:"server"`
-	Port           any            `yaml:"port"`
-	Password       string         `yaml:"password"`
-	UUID           string         `yaml:"uuid"`
-	Cipher         string         `yaml:"cipher"`
-	UDP            bool           `yaml:"udp"`
-	TLS            bool           `yaml:"tls"`
-	SNI            string         `yaml:"sni"`
-	ServerName     string         `yaml:"servername"`
-	SkipCertVerify bool           `yaml:"skip-cert-verify"`
-	Network        string         `yaml:"network"`
-	WsOpts         map[string]any `yaml:"ws-opts"`
-	GrpcOpts       map[string]any `yaml:"grpc-opts"`
-	Flow           string         `yaml:"flow"`
-	Alpn           []string       `yaml:"alpn"`
-	Fingerprint    string         `yaml:"fingerprint"`
-	ClientFingerprint string      `yaml:"client-fingerprint"`
-	RealityOpts    map[string]any `yaml:"reality-opts"`
+	Name              string         `yaml:"name"`
+	Type              string         `yaml:"type"`
+	Server            string         `yaml:"server"`
+	Port              any            `yaml:"port"`
+	Password          string         `yaml:"password"`
+	UUID              string         `yaml:"uuid"`
+	Cipher            string         `yaml:"cipher"`
+	UDP               bool           `yaml:"udp"`
+	TLS               bool           `yaml:"tls"`
+	SNI               string         `yaml:"sni"`
+	ServerName        string         `yaml:"servername"`
+	SkipCertVerify    bool           `yaml:"skip-cert-verify"`
+	Network           string         `yaml:"network"`
+	WsOpts            map[string]any `yaml:"ws-opts"`
+	GrpcOpts          map[string]any `yaml:"grpc-opts"`
+	Flow              string         `yaml:"flow"`
+	Alpn              []string       `yaml:"alpn"`
+	Fingerprint       string         `yaml:"fingerprint"`
+	ClientFingerprint string         `yaml:"client-fingerprint"`
+	RealityOpts       map[string]any `yaml:"reality-opts"`
 }
 
 func parseClashYAML(text string) ([]map[string]any, []string, []string, error) {

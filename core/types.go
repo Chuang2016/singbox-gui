@@ -44,10 +44,10 @@ type Settings struct {
 	AutoStart    bool         `json:"auto_start"`     // start sing-box automatically on launch
 	GatewayMode  bool         `json:"gateway_mode"`   // LAN transparent proxy (Linux + root)
 	// user-editable bulk lists (one entry per line), compiled to local rule-sets
-	UserDomains  string       `json:"user_domains"`
-	UserDomainOb string       `json:"user_domain_ob"` // outbound for user domains
-	UserIPs      string       `json:"user_ips"`
-	UserIPOb     string       `json:"user_ip_ob"` // outbound for user IPs
+	UserDomains  string `json:"user_domains"`
+	UserDomainOb string `json:"user_domain_ob"` // outbound for user domains
+	UserIPs      string `json:"user_ips"`
+	UserIPOb     string `json:"user_ip_ob"` // outbound for user IPs
 }
 
 // StoreData is the persisted file shape.

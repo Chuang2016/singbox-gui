@@ -198,19 +198,19 @@ func FetchConnections(clashPort int) ([]Connection, error) {
 	defer resp.Body.Close()
 	var body struct {
 		Connections []struct {
-			ID       string `json:"id"`
-			Upload   int64  `json:"upload"`
-			Download int64  `json:"download"`
-			Start    string `json:"start"`
-			Rule     string `json:"rule"`
-			Payload  string `json:"rulePayload"`
+			ID       string   `json:"id"`
+			Upload   int64    `json:"upload"`
+			Download int64    `json:"download"`
+			Start    string   `json:"start"`
+			Rule     string   `json:"rule"`
+			Payload  string   `json:"rulePayload"`
 			Chains   []string `json:"chains"`
 			Metadata struct {
-				Host          string `json:"host"`
-				DestIP        string `json:"destinationIP"`
-				DestPort      string `json:"destinationPort"`
-				Process       string `json:"process"`
-				ProcessPath   string `json:"processPath"`
+				Host        string `json:"host"`
+				DestIP      string `json:"destinationIP"`
+				DestPort    string `json:"destinationPort"`
+				Process     string `json:"process"`
+				ProcessPath string `json:"processPath"`
 			} `json:"metadata"`
 		} `json:"connections"`
 	}
@@ -244,4 +244,24 @@ func FetchConnections(clashPort int) ([]Connection, error) {
 		})
 	}
 	return out, nil
+}
+
+// KillConnection closes one live connection via the Clash API
+// (DELETE /connections/{id}); the dashboard's Kill button and the
+// native Connections page share this.
+func KillConnection(clashPort int, id string) error {
+	req, err := http.NewRequest(http.MethodDelete,
+		fmt.Sprintf("%s/connections/%s", ClashBase(clashPort), url.PathEscape(id)), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := clashClient(5 * time.Second).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("clash API: %s", resp.Status)
+	}
+	return nil
 }

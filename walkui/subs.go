@@ -14,8 +14,8 @@ import (
 
 // Subscriptions in the front-end are deliberately thin: list, add and
 // refresh (plus the same auto-refresh the settings interval asks
-// for). Full management -- delete, rename, per-sub inspection --
-// lives in the web back-end; nothing here forks core's logic
+// for). Deleting or renaming a subscription still lives in the web
+// back-end; nothing here forks core's logic
 // (core.CreateSubscription / core.RefreshSubscription).
 
 type subModel struct {
@@ -67,7 +67,7 @@ func (a *app) initSubRail() {
 
 	hint, err := walk.NewLabel(a.railBox)
 	if err == nil {
-		_ = hint.SetText("Full subscription and rule\nmanagement: web back-end.")
+		_ = hint.SetText("Delete / rename a subscription:\nweb back-end.")
 	}
 }
 

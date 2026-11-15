@@ -3,14 +3,13 @@
 // sbgui Windows front-end: a lightweight native (Walk / Win32) window
 // in front of the same core + server the web dashboard uses.
 //
-// One process, two faces:
-//   - this Walk window for day-to-day operation (node table, connect,
-//     system-proxy toggle, mode, latency, subscriptions), and
-//   - the full web back-end on http://127.0.0.1:20123, started
-//     in-process, for everything else (rules editor, connections,
-//     speed tests, settings) -- open it in any browser, any time.
-//
-// Both faces share one store and one sing-box child. The Fyne GUI in
+// Since preview.6 the Walk window carries the full feature set: node
+// table with latency / speed / traffic and header sorting, node
+// editing (CDN quick fields + JSON), routing rules with my lists and
+// custom rules, rule-set pack refresh and manual import, and the live
+// connections table. The web back-end on http://127.0.0.1:20123 still
+// runs in-process as a fallback (subscription delete/rename lives
+// there), sharing one store and one sing-box child. The Fyne GUI in
 // ../gui is frozen and not part of this build.
 package main
 
@@ -28,7 +27,7 @@ import (
 )
 
 // version of the native front-end build (preview line).
-const version = "1.1.0-gui-preview.5"
+const version = "1.1.0-gui-preview.6"
 
 func fatalBox(title, text string) {
 	walk.MsgBox(nil, title, text, walk.MsgBoxIconError|walk.MsgBoxOK)

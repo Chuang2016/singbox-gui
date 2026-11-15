@@ -2,23 +2,27 @@
 
 One executable, two faces, one process:
 
-- **Walk native window** — the day-to-day front-end: node table with
-  latency/traffic columns, share-link import, click-to-switch while
+- **Walk native window** — since preview.6 the full front-end, in
+  three tabs. Nodes: node table with latency/speed/traffic columns
+  and header-click sorting, share-link import, click-to-switch while
   running, Connect/Disconnect, system-proxy toggle, routing-mode
-  switch, latency tests, subscription list/add/refresh (+ auto-refresh
-  on the settings interval), live up/down rates in the status bar,
-  log pane.
+  switch, latency + speed tests, node edit (CDN quick fields + JSON,
+  validated with rollback) and delete, traffic reset, subscription
+  list/add/refresh (+ auto-refresh on the settings interval), live
+  up/down rates, log pane. Rules: routing toggles, my lists, custom
+  rules, rule-set pack refresh and manual import (URL / file).
+  Connections: live table with kill.
 - **Web back-end** — the existing `server` package, embedded in the
-  same process on `http://127.0.0.1:20123`. "Open web back-end" (or
-  typing the address in any browser) reaches the full dashboard:
-  rules editor, connections table, speed test, full subscription
-  management, settings.
+  same process on `http://127.0.0.1:20123`, kept as a fallback;
+  subscription delete/rename still lives there.
 
 Both faces share one `core.Store` and one sing-box child process.
 Statistics are never forked: latency/traffic come from `core`
 (`core/clash.go`, `core/traffic.go`) and the front-end reads the
 server's traffic tracker through `server.TrafficTracker()` so there
-is exactly one Clash poller per process.
+is exactly one Clash poller per process. Node editing is shared too:
+`core.UpdateNode` backs both the GUI dialog and
+`PUT /api/nodes/{id}`.
 
 Behaviour notes:
 

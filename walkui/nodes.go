@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/lxn/walk"
@@ -12,7 +13,9 @@ import (
 )
 
 // nodeModel backs the TableView with the shared store. Columns:
-// 0 active marker, 1 name, 2 protocol, 3 latency, 4 traffic.
+// 0 active marker, 1 name, 2 protocol, 3 latency, 4 speed, 5 traffic.
+// Rows follow the display order (header-click sorting), not the
+// store order; every row-based handler must map through it.
 type nodeModel struct {
 	walk.TableModelBase
 	a *app
@@ -23,11 +26,11 @@ func (m *nodeModel) RowCount() int {
 }
 
 func (m *nodeModel) Value(row, col int) interface{} {
-	nodes := m.a.store.Data.Nodes
-	if row < 0 || row >= len(nodes) {
+	order := m.a.displayOrder()
+	if row < 0 || row >= len(order) {
 		return ""
 	}
-	n := nodes[row]
+	n := m.a.store.Data.Nodes[order[row]]
 	switch col {
 	case 0:
 		if n.ID == m.a.store.Data.Cfg.ActiveNodeID {
@@ -41,9 +44,115 @@ func (m *nodeModel) Value(row, col int) interface{} {
 	case 3:
 		return m.a.latencyText(n.ID)
 	case 4:
+		return m.a.speedText(n.ID)
+	case 5:
 		return m.a.trafficText(n.ID)
 	}
 	return ""
+}
+
+// displayOrder returns store indices in the order the table shows
+// them, applying the current sort (latency/speed/traffic/name from
+// header clicks; missing measurements sort last, like the dashboard).
+func (a *app) displayOrder() []int {
+	nodes := a.store.Data.Nodes
+	order := make([]int, len(nodes))
+	for i := range nodes {
+		order[i] = i
+	}
+	if a.sortKey == "" {
+		return order
+	}
+	key := func(i int) (float64, string) {
+		n := nodes[i]
+		switch a.sortKey {
+		case "name":
+			return 0, n.Tag
+		case "latency":
+			a.delayMu.Lock()
+			d, ok := a.delays[n.ID]
+			a.delayMu.Unlock()
+			if !ok || d < 0 {
+				return 1e18, ""
+			}
+			return float64(d), ""
+		case "speed":
+			a.delayMu.Lock()
+			s, ok := a.speeds[n.ID]
+			okk := a.speedOK[n.ID]
+			a.delayMu.Unlock()
+			if !ok || !okk {
+				return -1, ""
+			}
+			return s, ""
+		case "traffic":
+			if tr := a.srv.TrafficTracker(); tr != nil {
+				return float64(tr.Total(n.ID)), ""
+			}
+		}
+		return 0, ""
+	}
+	sort.SliceStable(order, func(x, y int) bool {
+		fx, sx := key(order[x])
+		fy, sy := key(order[y])
+		if a.sortKey == "name" {
+			if a.sortDesc {
+				return sx > sy
+			}
+			return sx < sy
+		}
+		if a.sortDesc {
+			return fx > fy
+		}
+		return fx < fy
+	})
+	return order
+}
+
+// onColumnClicked maps a header click to a sort: same key toggles
+// direction; latency defaults ascending, speed/traffic descending
+// (the dashboard's convention).
+func (a *app) onColumnClicked(col int) {
+	keys := map[int]string{1: "name", 3: "latency", 4: "speed", 5: "traffic"}
+	k, ok := keys[col]
+	if !ok {
+		return
+	}
+	if a.sortKey == k {
+		a.sortDesc = !a.sortDesc
+	} else {
+		a.sortKey = k
+		a.sortDesc = k == "speed" || k == "traffic"
+	}
+	a.model.PublishRowsReset()
+}
+
+// selectedNode maps the table's current display row to its node.
+func (a *app) selectedNode() *core.Node {
+	if a.table == nil {
+		return nil
+	}
+	row := a.table.CurrentIndex()
+	order := a.displayOrder()
+	if row < 0 || row >= len(order) {
+		return nil
+	}
+	return &a.store.Data.Nodes[order[row]]
+}
+
+// speedText renders the cached speed-test result ("12.3 Mbps",
+// "fail", or "-" when never measured).
+func (a *app) speedText(nodeID string) string {
+	a.delayMu.Lock()
+	defer a.delayMu.Unlock()
+	s, ok := a.speeds[nodeID]
+	if !ok {
+		return "-"
+	}
+	if !a.speedOK[nodeID] {
+		return "fail"
+	}
+	return fmt.Sprintf("%.1f Mbps", s)
 }
 
 // latencyText renders the cached delay ("86 ms", "timeout", or "-"
@@ -122,12 +231,9 @@ func (a *app) onRowSelected() {
 	if a.suppressSelect || a.table == nil {
 		return
 	}
-	row := a.table.CurrentIndex()
-	nodes := a.store.Data.Nodes
-	if row < 0 || row >= len(nodes) {
-		return
+	if n := a.selectedNode(); n != nil {
+		a.selectNode(n.ID)
 	}
-	a.selectNode(nodes[row].ID)
 }
 
 // selectNode marks a node active (click in the node table).
@@ -181,9 +287,9 @@ func (a *app) syncTableSelection() {
 		return
 	}
 	row := -1
-	for i, n := range a.store.Data.Nodes {
-		if n.ID == a.store.Data.Cfg.ActiveNodeID {
-			row = i
+	for disp, idx := range a.displayOrder() {
+		if a.store.Data.Nodes[idx].ID == a.store.Data.Cfg.ActiveNodeID {
+			row = disp
 			break
 		}
 	}
@@ -268,13 +374,12 @@ func (a *app) testLatencySelected() {
 		a.fail("Latency test: sing-box is not running")
 		return
 	}
-	row := a.table.CurrentIndex()
-	nodes := a.store.Data.Nodes
-	if row < 0 || row >= len(nodes) {
+	n := a.selectedNode()
+	if n == nil {
 		a.fail("Latency test: select a node first")
 		return
 	}
-	node := nodes[row]
+	node := *n
 	go func() {
 		d := core.ClashDelay(a.store.Data.Cfg.ClashPort, "node:"+node.ID)
 		a.mw.Synchronize(func() {
@@ -314,4 +419,109 @@ func (a *app) testLatencyAll() {
 			a.refreshLogs()
 		})
 	}()
+}
+
+// ---------- speed test / delete / traffic reset ----------
+
+// testSpeedSelected measures the highlighted node's download speed
+// through core.ClashSpeedTest (it briefly switches the selector to
+// the node, then restores it -- same as the dashboard, with the same
+// confirmation).
+func (a *app) testSpeedSelected() {
+	if !a.mgr.Running() {
+		a.fail("Speed test: sing-box is not running")
+		return
+	}
+	n := a.selectedNode()
+	if n == nil {
+		a.fail("Speed test: select a node first")
+		return
+	}
+	node := *n
+	if walk.MsgBox(a.mw, "Speed test",
+		"The speed test briefly switches the proxy to \""+node.Tag+"\", downloads a test file, then switches back. Continue?",
+		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+		return
+	}
+	a.logf("Speed test running (%s)...", node.Tag)
+	a.refreshLogs()
+	go func() {
+		mbps, err := core.ClashSpeedTest(a.store, a.mgr, node.ID)
+		a.mw.Synchronize(func() {
+			a.delayMu.Lock()
+			a.speeds[node.ID] = mbps
+			a.speedOK[node.ID] = err == nil
+			a.delayMu.Unlock()
+			if err != nil {
+				a.fail("Speed test failed: %v", err)
+			} else {
+				a.logf("Speed %s: %.1f Mbps", node.Tag, mbps)
+				a.notice = ""
+				a.refreshStatus()
+			}
+			a.model.PublishRowsReset()
+			a.refreshLogs()
+		})
+	}()
+}
+
+// deleteSelectedNode removes the highlighted node after a
+// confirmation (the dashboard's Del button). If it was the active
+// node, the selection falls back to the first remaining node.
+func (a *app) deleteSelectedNode() {
+	n := a.selectedNode()
+	if n == nil {
+		a.fail("Delete node: select a node first")
+		return
+	}
+	node := *n
+	if walk.MsgBox(a.mw, "Delete node",
+		"Delete \""+node.Tag+"\"?",
+		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+		return
+	}
+	wasActive := a.store.Data.Cfg.ActiveNodeID == node.ID
+	if !core.DeleteNode(a.store, node.ID) {
+		a.fail("Delete node: node not found")
+		return
+	}
+	a.delayMu.Lock()
+	delete(a.delays, node.ID)
+	delete(a.speeds, node.ID)
+	delete(a.speedOK, node.ID)
+	a.delayMu.Unlock()
+	if wasActive {
+		a.store.Data.Cfg.ActiveNodeID = ""
+		if len(a.store.Data.Nodes) > 0 {
+			a.store.Data.Cfg.ActiveNodeID = a.store.Data.Nodes[0].ID
+		}
+		_ = a.store.Save()
+	}
+	a.lastNodeCount = len(a.store.Data.Nodes)
+	a.model.PublishRowsReset()
+	a.syncTableSelection()
+	a.logf("Deleted node %s", node.Tag)
+	if a.mgr.Running() {
+		a.logf("Node list changed while running: restart to apply")
+	}
+	a.notice = ""
+	a.refreshStatus()
+	a.refreshLogs()
+}
+
+// resetTraffic zeroes the cumulative per-node counters (the
+// dashboard's Reset traffic button).
+func (a *app) resetTraffic() {
+	if walk.MsgBox(a.mw, "Reset traffic",
+		"Reset cumulative traffic counters for all nodes?",
+		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+		return
+	}
+	if tr := a.srv.TrafficTracker(); tr != nil {
+		tr.Reset()
+	}
+	a.lastTrafficSum = 0
+	a.model.PublishRowsReset()
+	a.logf("Traffic counters reset")
+	a.refreshLogs()
 }
