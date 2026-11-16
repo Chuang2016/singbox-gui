@@ -33,6 +33,10 @@ var demoLinks = []string{
 	"hysteria2://demopass@example.com:443?insecure=1#Demo-HY2",
 }
 
+// guiVersion labels this front-end build (the Walk front-end and
+// the web back-end carry their own version strings).
+const guiVersion = "1.1.0-gui-preview.7-gui"
+
 const (
 	pageNodes = "nodes"
 	pageSubs  = "subs"
@@ -57,9 +61,9 @@ type guiState struct {
 	store   *core.Store
 	mgr     *core.Manager
 
-	notice  string   // sticky message in the status bar until the next action
-	uiLogs  []string // GUI-side log lines, shown with the sing-box log
-	logMu   sync.Mutex
+	notice     string   // sticky message in the status bar until the next action
+	uiLogs     []string // GUI-side log lines, shown with the sing-box log
+	logMu      sync.Mutex
 	sysProxy   bool // we currently own the OS proxy settings
 	wasRunning bool // last observed sing-box state (auto-clear check)
 
@@ -81,12 +85,17 @@ type guiState struct {
 	healthMu  sync.Mutex
 	delays    map[string]healthVal
 	speeds    map[string]healthVal
+	sortKey   string // "", "name", "latency", "speed", "traffic"
+	sortDesc  bool
+	selNodeID string // last node row clicked (edit/delete/test target)
+	nodesRate *widget.Label
 
 	// connections page
 	connTable    *widget.Table
 	conns        []core.Connection
 	connNote     *widget.Label
 	connFetching bool
+	connSel      int // selected data row (0-based), -1 = none
 
 	// traffic (tracker created by initEngine)
 	tracker *core.TrafficTracker
@@ -354,7 +363,7 @@ func (g *guiState) refreshStatus() {
 func main() {
 	a := app.NewWithID("org.sbgui.native")
 	applyTheme(a)
-	w := a.NewWindow("sbgui — sing-box manager")
+	w := a.NewWindow("sbgui — sing-box manager " + guiVersion)
 	w.Resize(fyne.NewSize(1060, 680))
 
 	workDir := core.WorkDir()
@@ -388,6 +397,7 @@ func main() {
 		navBt:   map[string]*widget.Button{},
 		delays:  map[string]healthVal{},
 		speeds:  map[string]healthVal{},
+		connSel: -1,
 	}
 	g.initEngine()
 

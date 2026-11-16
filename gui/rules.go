@@ -2,8 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -14,16 +18,16 @@ import (
 )
 
 // Rules page. It mirrors the web dashboard "Routing rules"
-// card exactly: the same core.Settings fields (Mode, BlockAds, GFWList,
-// UserDomains/UserIPs + their outbounds, CustomRules), the same value
-// sets, and the same save semantics -- write the store, then, if
-// sing-box is running, offer a restart so the new config takes effect.
-//
-// The downloadable rule-set packs (geosite-cn, geoip-cn, ads, gfwlist)
-// are NOT part of this model: in the core they are files on disk gated
-// by the Mode/BlockAds/GFWList fields above, so pack refresh/import
-// stays a separate feature (web: /api/rulesets/*), not part of this
-// editor.
+// card and the Walk front-end's Rules tab: the same core.Settings
+// fields (Mode, BlockAds, GFWList, UserDomains/UserIPs + their
+// outbounds, CustomRules) and the same save semantics. The four
+// toggles (block ads / GFW list / auto-start / gateway) and the
+// routing mode save the moment they change, like the dashboard's
+// quick toggles; my lists + custom rules are staged and committed
+// by "Save & apply", which offers a restart when running. The
+// rule-set packs (geosite-cn / geoip-cn / ads / gfwlist) can be
+// refreshed or imported manually (URL / file) through the same
+// core functions the HTTP handlers call.
 
 type valueLabel struct{ value, label string }
 
@@ -131,37 +135,52 @@ func (g *guiState) restartProxy() {
 type rulesEditor struct {
 	g *guiState
 
-	modeSel *widget.Select
-	adsCk   *widget.Check
-	gfwCk   *widget.Check
-	udText  *widget.Entry
-	udObSel *widget.Select
-	uiText  *widget.Entry
-	uiObSel *widget.Select
+	modeSel  *widget.Select
+	adsCk    *widget.Check
+	gfwCk    *widget.Check
+	autoCk   *widget.Check
+	gwCk     *widget.Check
+	intEntry *widget.Entry
+	udText   *widget.Entry
+	udObSel  *widget.Select
+	uiText   *widget.Entry
+	uiObSel  *widget.Select
 
 	ruleList *widget.List
 	kindSel  *widget.Select
 	valEntry *widget.Entry
 	outSel   *widget.Select
 
-	staged []core.CustomRule // working copy, committed on Save
+	rsInfo  *widget.Label
+	rsTgt   *widget.Select
+	rsURLEd *widget.Entry
+
+	loading bool              // suppresses instant-save while widgets reload
+	staged  []core.CustomRule // working copy, committed on Save
 }
 
-// buildRulesPage turns the milestone-2 rules editor window into the
-// Rules page of the new shell (same widgets, same staged-edit + save
-// semantics, no separate window).
+// buildRulesPage assembles the Rules page: instant-save toggles and
+// mode on top, the rule-set pack tools, then the staged my-lists /
+// custom-rules editor committed by "Save & apply".
 func (g *guiState) buildRulesPage() fyne.CanvasObject {
 	cfg := g.store.Data.Cfg
-	e := &rulesEditor{g: g}
+	e := &rulesEditor{g: g, loading: true}
 	e.staged = append([]core.CustomRule{}, cfg.CustomRules...)
 	g.rulesEd = e
 
-	e.modeSel = widget.NewSelect(labelsOf(modeOptions), nil)
+	e.modeSel = widget.NewSelect(labelsOf(modeOptions), func(string) { e.quickSaveMode() })
 	e.modeSel.SetSelected(labelFor(modeOptions, cfg.Mode))
-	e.adsCk = widget.NewCheck("Block ads/trackers", nil)
+	e.adsCk = widget.NewCheck("Block ads/trackers", func(bool) { e.quickToggle() })
 	e.adsCk.SetChecked(cfg.BlockAds)
-	e.gfwCk = widget.NewCheck("GFW list (extra blocked domains via proxy)", nil)
+	e.gfwCk = widget.NewCheck("GFW list (extra blocked domains via proxy)", func(bool) { e.quickToggle() })
 	e.gfwCk.SetChecked(cfg.GFWList)
+	e.autoCk = widget.NewCheck("Auto-start proxy on launch", func(bool) { e.quickToggle() })
+	e.autoCk.SetChecked(cfg.AutoStart)
+	e.gwCk = widget.NewCheck("Gateway mode (Linux server only)", func(bool) { e.quickToggle() })
+	e.gwCk.SetChecked(cfg.GatewayMode)
+	e.intEntry = widget.NewEntry()
+	e.intEntry.SetText(strconv.Itoa(cfg.AutoUpdateHr))
+	e.intEntry.OnSubmitted = func(string) { e.saveInterval() }
 
 	e.udText = widget.NewMultiLineEntry()
 	e.udText.SetText(cfg.UserDomains)
@@ -213,10 +232,32 @@ func (g *guiState) buildRulesPage() fyne.CanvasObject {
 	saveBtn := widget.NewButton("Save & apply", func() { e.save() })
 	saveBtn.Importance = widget.HighImportance
 
+	// --- rule-set packs: cached-pack info, force update, manual
+	// import (URL / file) through the shared core functions ---
+	e.rsInfo = widget.NewLabel("")
+	e.rsInfo.Wrapping = fyne.TextWrapWord
+	e.rsTgt = widget.NewSelect(core.ImportableTargets, nil)
+	e.rsTgt.SetSelected(core.ImportableTargets[0])
+	e.rsURLEd = widget.NewEntry()
+	e.rsURLEd.SetPlaceHolder("If auto-download fails, paste any working download URL for the selected pack...")
+	updateDataBtn := widget.NewButton("Update rule data", func() { e.updateRuleData() })
+	downloadBtn := widget.NewButton("Download", func() { e.importRuleSetURL() })
+	fileBtn := widget.NewButton("Import file...", func() { e.importRuleSetFile() })
+	e.refreshRuleSetInfo()
+
 	top := container.NewVBox(
 		widget.NewLabelWithStyle("Mode", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		e.modeSel,
 		container.NewHBox(e.adsCk, e.gfwCk),
+		container.NewHBox(e.autoCk, e.gwCk),
+		container.NewBorder(nil, nil,
+			widget.NewLabel("Subscription auto-refresh (hours, 0 = off, Enter to save):"), nil, e.intEntry),
+		widget.NewLabelWithStyle("Rule-set packs", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		e.rsInfo,
+		container.NewBorder(nil, nil, nil,
+			container.NewHBox(updateDataBtn, downloadBtn, fileBtn),
+			container.NewBorder(nil, nil, widget.NewLabel("Import pack:"), nil, e.rsTgt)),
+		e.rsURLEd,
 		widget.NewLabelWithStyle("My lists (one per line, highest priority)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		container.NewGridWithColumns(2,
 			container.NewVBox(container.NewHBox(widget.NewLabel("Domains via"), e.udObSel), e.udText),
@@ -229,22 +270,206 @@ func (g *guiState) buildRulesPage() fyne.CanvasObject {
 			container.NewBorder(nil, nil, nil, e.outSel, e.valEntry)),
 		container.NewHBox(saveBtn),
 	)
+	e.loading = false
 	return container.NewBorder(top, bottom, nil, nil, e.ruleList)
 }
 
 // reload re-reads the settings into the widgets (the page is built
 // once; Settings or a restart may have changed values since).
+// Instant-save handlers are suppressed while it runs.
 func (e *rulesEditor) reload() {
+	e.loading = true
+	defer func() { e.loading = false }()
 	cfg := e.g.store.Data.Cfg
 	e.modeSel.SetSelected(labelFor(modeOptions, cfg.Mode))
 	e.adsCk.SetChecked(cfg.BlockAds)
 	e.gfwCk.SetChecked(cfg.GFWList)
+	e.autoCk.SetChecked(cfg.AutoStart)
+	e.gwCk.SetChecked(cfg.GatewayMode)
+	e.intEntry.SetText(strconv.Itoa(cfg.AutoUpdateHr))
 	e.udText.SetText(cfg.UserDomains)
 	e.udObSel.SetSelected(labelFor(outboundOptions, cfg.UserDomainOb))
 	e.uiText.SetText(cfg.UserIPs)
 	e.uiObSel.SetSelected(labelFor(outboundOptions, cfg.UserIPOb))
 	e.staged = append([]core.CustomRule{}, cfg.CustomRules...)
 	e.ruleList.Refresh()
+	e.refreshRuleSetInfo()
+}
+
+// quickToggle persists the four toggles the moment they change,
+// like the dashboard's quickToggle and the Walk front-end.
+func (e *rulesEditor) quickToggle() {
+	if e.loading {
+		return
+	}
+	cfg := &e.g.store.Data.Cfg
+	cfg.BlockAds = e.adsCk.Checked
+	cfg.GFWList = e.gfwCk.Checked
+	cfg.AutoStart = e.autoCk.Checked
+	cfg.GatewayMode = e.gwCk.Checked
+	if err := e.g.store.Save(); err != nil {
+		e.g.fail("Save settings failed: %v", err)
+		return
+	}
+	e.g.logf("Settings saved (ads %v, gfw %v, auto-start %v, gateway %v)",
+		cfg.BlockAds, cfg.GFWList, cfg.AutoStart, cfg.GatewayMode)
+}
+
+// quickSaveMode persists a routing-mode change immediately (the
+// Walk front-end keeps the mode in its toolbar with the same
+// semantics) and offers a restart when running.
+func (e *rulesEditor) quickSaveMode() {
+	if e.loading || e.modeSel.Selected == "" {
+		return
+	}
+	cfg := &e.g.store.Data.Cfg
+	cfg.Mode = valueFor(modeOptions, e.modeSel.Selected)
+	if err := e.g.store.Save(); err != nil {
+		e.g.fail("Save mode failed: %v", err)
+		return
+	}
+	e.g.logf("Routing mode saved: %s", cfg.Mode)
+	e.g.offerRestart("Mode saved. Restart sing-box to apply?")
+}
+
+// saveInterval persists the subscription auto-refresh interval from
+// the Rules page entry (the Subscriptions page writes the same
+// field).
+func (e *rulesEditor) saveInterval() {
+	h, err := strconv.Atoi(strings.TrimSpace(e.intEntry.Text))
+	if err != nil || h < 0 {
+		e.g.fail("Auto-refresh interval: enter hours >= 0 (0 = off)")
+		return
+	}
+	e.g.store.Data.Cfg.AutoUpdateHr = h
+	if err := e.g.store.Save(); err != nil {
+		e.g.fail("Save settings: %v", err)
+		return
+	}
+	e.g.lastAutoRefresh = time.Now()
+	e.g.logf("Subscription auto-refresh interval set to %d h", h)
+}
+
+// offerRestart asks (when running) and restarts sing-box so a saved
+// change takes effect; the mixed port does not move, so the system
+// proxy is unaffected.
+func (g *guiState) offerRestart(prompt string) {
+	if !g.mgr.Running() {
+		return
+	}
+	dialog.ShowConfirm("sbgui", prompt, func(ok bool) {
+		if ok {
+			g.restartProxy()
+		}
+	}, g.win)
+}
+
+// ---------- rule-set packs ----------
+
+// refreshRuleSetInfo renders the cached-pack summary line.
+func (e *rulesEditor) refreshRuleSetInfo() {
+	if e.rsInfo == nil {
+		return
+	}
+	info := core.RuleSetInfo(e.g.workDir)
+	keys := make([]string, 0, len(info))
+	for k := range info {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+": "+info[k])
+	}
+	if len(parts) == 0 {
+		e.rsInfo.SetText("no cached packs")
+		return
+	}
+	e.rsInfo.SetText(strings.Join(parts, " | "))
+}
+
+func (e *rulesEditor) ruleSetTarget() string {
+	if e.rsTgt != nil && e.rsTgt.Selected != "" {
+		return e.rsTgt.Selected
+	}
+	return core.ImportableTargets[0]
+}
+
+// updateRuleData force re-downloads the packs (backup + restore on
+// failure, inside core.RefreshRuleSets), then offers a restart.
+func (e *rulesEditor) updateRuleData() {
+	g := e.g
+	g.logf("Updating rule data...")
+	go func() {
+		err := core.RefreshRuleSets(g.workDir, func() error {
+			return core.Regen(g.store.Data, g.workDir)
+		})
+		fyne.Do(func() {
+			if err != nil {
+				g.fail("Rule data update failed: %v", err)
+				return
+			}
+			g.logf("Rule data updated")
+			g.notice = ""
+			e.refreshRuleSetInfo()
+			g.refreshStatus()
+			g.offerRestart("Rule data updated. Restart sing-box to apply?")
+		})
+	}()
+}
+
+// importRuleSetURL downloads the pasted URL as the selected pack.
+func (e *rulesEditor) importRuleSetURL() {
+	u := strings.TrimSpace(e.rsURLEd.Text)
+	if u == "" {
+		e.g.fail("Import pack: paste a download URL first")
+		return
+	}
+	target := e.ruleSetTarget()
+	g := e.g
+	g.logf("Downloading %s from %s ...", target, u)
+	go func() {
+		err := core.ImportRuleSetFromURL(g.workDir, target, u)
+		fyne.Do(func() {
+			if err != nil {
+				g.fail("Import failed: %v", err)
+				return
+			}
+			g.logf("Imported %s", target)
+			g.notice = ""
+			e.refreshRuleSetInfo()
+			g.refreshStatus()
+			g.offerRestart("Rule-set imported. Restart sing-box to apply?")
+		})
+	}()
+}
+
+// importRuleSetFile loads a user-picked file as the selected pack.
+func (e *rulesEditor) importRuleSetFile() {
+	target := e.ruleSetTarget()
+	g := e.g
+	d := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+		if err != nil || r == nil {
+			return
+		}
+		defer r.Close()
+		data, err := io.ReadAll(r)
+		if err != nil {
+			g.fail("Import failed: %v", err)
+			return
+		}
+		if err := core.ImportRuleSetFile(g.workDir, target, data); err != nil {
+			g.fail("Import failed: %v", err)
+			return
+		}
+		g.logf("Imported %s from %s", target, r.URI().Name())
+		g.notice = ""
+		e.refreshRuleSetInfo()
+		g.refreshStatus()
+		g.offerRestart("Rule-set imported. Restart sing-box to apply?")
+	}, g.win)
+	d.Resize(fyne.NewSize(720, 480))
+	d.Show()
 }
 
 // save validates and commits the staged edits to the store, then follows

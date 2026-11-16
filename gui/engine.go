@@ -23,17 +23,20 @@ func (g *guiState) stopEngine() {
 }
 
 // refreshRates updates the bottom-right rate readout (once a second)
-// from the shared traffic tracker.
+// from the shared traffic tracker; the same text is mirrored next to
+// the Nodes page actions, like the Walk front-end does.
 func (g *guiState) refreshRates() {
-	if g.rateTx == nil {
-		return
+	txt := ""
+	if g.tracker != nil && g.mgr.Running() {
+		up, down := g.tracker.Rates()
+		txt = fmt.Sprintf("Down %s  |  Up %s", humanRate(down), humanRate(up))
 	}
-	if g.tracker == nil || !g.mgr.Running() {
-		g.rateTx.SetText("")
-		return
+	if g.rateTx != nil {
+		g.rateTx.SetText(txt)
 	}
-	up, down := g.tracker.Rates()
-	g.rateTx.SetText(fmt.Sprintf("Down %s  |  Up %s", humanRate(down), humanRate(up)))
+	if g.nodesRate != nil {
+		g.nodesRate.SetText(txt)
+	}
 }
 
 // humanBytes formats a byte count the way the dashboard does
