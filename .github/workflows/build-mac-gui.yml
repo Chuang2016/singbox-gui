@@ -18,7 +18,7 @@ jobs:
           CGO_ENABLED: "1"
         run: |
           mkdir -p stage
-          go build -trimpath -ldflags "-s -w" -o stage/sbgui ./gui
+          go build -trimpath -ldflags "-s -w" -o stage/sbgui ./gapp
           file stage/sbgui
 
       - name: Build bundle launcher
