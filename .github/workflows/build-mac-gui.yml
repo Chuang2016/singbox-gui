@@ -1,0 +1,70 @@
+name: build-mac-gui
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build GUI binary (Fyne, darwin/arm64)
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          mkdir -p stage
+          go build -trimpath -ldflags "-s -w" -o stage/sbgui ./gui
+          file stage/sbgui
+
+      - name: Build bundle launcher
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -trimpath -ldflags "-s -w" -o stage/sbgui-launcher ./maclauncher
+          file stage/sbgui-launcher
+
+      - name: Fetch helper binaries (sing-box + privproto-client from the preview.6 release)
+        run: |
+          curl -sL -o helpers.zip https://github.com/Chuang2016/singbox-gui/releases/download/v1.1.0-gui-preview.6/sbgui-macos-arm64.zip
+          unzip -o helpers.zip -d helpers
+          cp helpers/sbgui-macos-arm64/sing-box helpers/sbgui-macos-arm64/privproto-client stage/
+          ls -la stage
+
+      - name: Make app icon
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 macapp/icon_maker.py sbgui.iconset
+          iconutil -c icns sbgui.iconset -o stage/AppIcon.icns
+
+      - name: Assemble sbgui.app
+        run: |
+          mkdir -p sbgui.app/Contents/MacOS sbgui.app/Contents/Resources/bin
+          cp macapp/Info.plist sbgui.app/Contents/Info.plist
+          cp stage/AppIcon.icns sbgui.app/Contents/Resources/AppIcon.icns
+          cp stage/sbgui-launcher sbgui.app/Contents/MacOS/
+          cp stage/sbgui stage/sing-box stage/privproto-client sbgui.app/Contents/Resources/bin/
+          chmod +x sbgui.app/Contents/MacOS/sbgui-launcher sbgui.app/Contents/Resources/bin/*
+          find sbgui.app -type f | sort
+
+      - name: Ad-hoc sign the bundle
+        run: |
+          codesign --force --deep --sign - sbgui.app
+          codesign -v --strict sbgui.app && echo "signature OK"
+
+      - name: Create DMG (with Applications shortcut)
+        run: |
+          mkdir dmgroot
+          cp -R sbgui.app dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname sbgui -srcfolder dmgroot -ov -format UDZO sbgui.dmg
+          ls -la sbgui.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbgui-mac-gui-dmg
+          path: sbgui.dmg
