@@ -3,13 +3,21 @@ module github.com/Chuang2016/singbox-gui
 go 1.24.0
 
 require (
+	gioui.org v0.10.3
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
+	github.com/ncruces/zenity v0.10.14
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
+	gioui.org/shader v1.0.9 // indirect
 	github.com/FyshOS/fancyfs v0.0.1 // indirect
+	github.com/akavel/rsrc v0.10.2 // indirect
+	github.com/dchest/jsmin v0.0.0-20220218165748-59f39799265f // indirect
+	github.com/josephspurrier/goversioninfo v1.7.0 // indirect
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e // indirect
+	github.com/randall77/makefat v0.0.0-20210315173500-7ddd0e42c844 // indirect
+	golang.org/x/exp/shiny v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
 	gopkg.in/Knetic/govaluate.v3 v3.0.0 // indirect
 )
 
@@ -43,8 +51,8 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/yuin/goldmark v1.8.2 // indirect
-	golang.org/x/image v0.24.0 // indirect
-	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sys v0.30.0
-	golang.org/x/text v0.22.0 // indirect
+	golang.org/x/image v0.26.0 // indirect
+	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/sys v0.39.0
+	golang.org/x/text v0.32.0 // indirect
 )

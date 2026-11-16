@@ -17,7 +17,7 @@ import (
 	"syscall"
 )
 
-const bundleVersion = "1.1.0-gui-preview.7-gui"
+const bundleVersion = "1.1.0-gui-preview.8-gio"
 
 var binNames = []string{"sbgui", "sing-box", "privproto-client"}
 
