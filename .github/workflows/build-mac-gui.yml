@@ -37,7 +37,7 @@ jobs:
 
       - name: Make app icon
         run: |
-          python3 -m pip install --quiet pillow
+          python3 -m pip install --quiet --break-system-packages pillow
           python3 macapp/icon_maker.py sbgui.iconset
           iconutil -c icns sbgui.iconset -o stage/AppIcon.icns
 
