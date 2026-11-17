@@ -164,7 +164,7 @@ func (g *guiState) buildNodesPage() fyne.CanvasObject {
 	// --- import row (multi-line: share links and whole
 	// subscription dumps, parsed line by line like the dashboard) ---
 	importEntry := widget.NewMultiLineEntry()
-	importEntry.SetPlaceHolder("Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto)...")
+	importEntry.SetPlaceHolder("Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto / naive)...")
 	importEntry.SetMinRowsVisible(2)
 	importBtn := widget.NewButton("Import", func() { g.importLinks(importEntry) })
 	importRow := container.NewBorder(nil, nil, nil, importBtn, importEntry)

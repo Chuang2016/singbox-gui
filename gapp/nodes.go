@@ -195,7 +195,7 @@ func (p *nodesPage) layout(gtx layout.Context, a *App) layout.Dimensions {
 							gtx.Constraints.Min.Y = gtx.Dp(unit.Dp(52))
 							gtx.Constraints.Max.Y = gtx.Dp(unit.Dp(52))
 							return widget.Border{Color: colDivider, Width: unit.Dp(1), CornerRadius: unit.Dp(4)}.Layout(gtx,
-								material.Editor(a.th, &p.importEd, "Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto)...").Layout)
+								material.Editor(a.th, &p.importEd, "Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto / naive)...").Layout)
 						}),
 						layout.Rigid(layout.Spacer{Width: unit.Dp(8)}.Layout),
 						layout.Rigid(material.Button(a.th, &p.importBtn, "Import").Layout),

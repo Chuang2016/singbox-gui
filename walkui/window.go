@@ -111,7 +111,7 @@ func (a *app) buildWindow() error {
 								Children: []Widget{
 									LineEdit{
 										AssignTo:  &a.importEd,
-										CueBanner: "Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto)...",
+										CueBanner: "Paste one or more share links (vless / trojan / ss / vmess / hysteria2 / tuic / anytls / privproto / naive)...",
 									},
 									PushButton{
 										Text:      "Import",

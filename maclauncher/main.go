@@ -1,8 +1,8 @@
 // sbgui.app launcher for the macOS GUI build (Fyne front-end).
 //
 // The bundle's real GUI binary lives in Contents/Resources/bin/ together
-// with sing-box and privproto-client. On first launch (and whenever the
-// bundle version changes) the launcher copies those three files into
+// with sing-box, privproto-client and naive. On first launch (and
+// whenever the bundle version changes) the launcher copies those files into
 // ~/Library/Application Support/sbgui/ and then execs the GUI binary
 // from there, so core's portable "data next to the exe" logic lands in
 // a writable, update-proof data dir and the helper lookup (workDir)
@@ -17,9 +17,9 @@ import (
 	"syscall"
 )
 
-const bundleVersion = "1.1.0-gui-preview.8-gio"
+const bundleVersion = "1.1.0-gui-preview.9-gio"
 
-var binNames = []string{"sbgui", "sing-box", "privproto-client"}
+var binNames = []string{"sbgui", "sing-box", "privproto-client", "naive"}
 
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
