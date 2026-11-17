@@ -52,6 +52,7 @@ jobs:
           cp stage/AppIcon.icns sbgui.app/Contents/Resources/AppIcon.icns
           cp stage/sbgui-launcher sbgui.app/Contents/MacOS/
           cp stage/sbgui stage/sing-box stage/privproto-client sbgui.app/Contents/Resources/bin/
+          cp stage/naive sbgui.app/Contents/Resources/bin/
           chmod +x sbgui.app/Contents/MacOS/sbgui-launcher sbgui.app/Contents/Resources/bin/*
           find sbgui.app -type f | sort
 
