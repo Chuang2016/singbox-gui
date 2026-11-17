@@ -33,6 +33,10 @@ jobs:
           curl -sL -o helpers.zip https://github.com/Chuang2016/singbox-gui/releases/download/v1.1.0-gui-preview.6/sbgui-macos-arm64.zip
           unzip -o helpers.zip -d helpers
           cp helpers/sbgui-macos-arm64/sing-box helpers/sbgui-macos-arm64/privproto-client stage/
+          curl -sL -o naiveproxy.tar.xz https://github.com/klzgrad/naiveproxy/releases/download/v154.0.8037.49-5/naiveproxy-v154.0.8037.49-5-mac-arm64-arm64.tar.xz
+          tar -xJf naiveproxy.tar.xz
+          cp naiveproxy-*/naive stage/
+          chmod +x stage/naive
           ls -la stage
 
       - name: Make app icon
