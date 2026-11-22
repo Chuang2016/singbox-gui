@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -98,6 +99,13 @@ type naiveClient struct {
 	cfgPath string
 	done    chan struct{} // closed once the process has exited
 	waitErr error         // valid after done is closed
+	gen     uint64        // session generation that launched this client
+
+	// intentional is set by every teardown path before it kills
+	// the process, so the exit watcher can tell sbgui's own kills
+	// (expected, silent) from the client dying on its own (a real
+	// failure, logged with its exit status).
+	intentional atomic.Bool
 }
 
 // naiveProxyURL rebuilds the upstream proxy URL (https:// or
@@ -212,7 +220,7 @@ func (m *Manager) naiveSpecs() ([]naiveSpec, error) {
 // are per-node: a node whose client cannot start is recorded in
 // the Manager's NodeErrors and logged, the remaining clients
 // still launch, and sing-box starts either way.
-func (m *Manager) startNaiveClients() {
+func (m *Manager) startNaiveClients(gen uint64) {
 	specs, err := m.naiveSpecs()
 	if err != nil {
 		m.pushLog(fmt.Sprintf("naive: %v", err))
@@ -230,8 +238,8 @@ func (m *Manager) startNaiveClients() {
 		return
 	}
 	for _, spec := range specs {
-		if err := m.startOneNaiveClient(bin, spec); err != nil {
-			m.dropNaiveClient(spec.nodeID)
+		if err := m.startOneNaiveClient(bin, spec, gen); err != nil {
+			m.dropNaiveClient(gen, spec.nodeID)
 			m.setNodeError(spec.nodeID, err)
 			m.pushLog(fmt.Sprintf("naive: node %s failed: %v", spec.tag, err))
 			continue
@@ -244,14 +252,15 @@ func (m *Manager) startNaiveClients() {
 }
 
 // dropNaiveClient terminates and forgets the one client belonging
-// to nodeID (a client that failed its startup wait). Other
-// clients are untouched.
-func (m *Manager) dropNaiveClient(nodeID string) {
+// to nodeID in generation gen (a client that failed its startup
+// wait). Clients of other generations -- and other nodes -- are
+// untouched.
+func (m *Manager) dropNaiveClient(gen uint64, nodeID string) {
 	m.nvMu.Lock()
 	var dropped *naiveClient
 	kept := make([]*naiveClient, 0, len(m.nvClients))
 	for _, nc := range m.nvClients {
-		if nc.spec.nodeID == nodeID {
+		if nc.gen == gen && nc.spec.nodeID == nodeID {
 			dropped = nc
 		} else {
 			kept = append(kept, nc)
@@ -262,6 +271,7 @@ func (m *Manager) dropNaiveClient(nodeID string) {
 	if dropped == nil {
 		return
 	}
+	dropped.intentional.Store(true)
 	if dropped.cmd.Process != nil {
 		_ = dropped.cmd.Process.Kill()
 	}
@@ -272,10 +282,39 @@ func (m *Manager) dropNaiveClient(nodeID string) {
 	_ = os.Remove(dropped.cfgPath)
 }
 
-func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec) error {
+// watchNaiveExit reports a client that dies on its own after a
+// successful start. Teardown kills are expected and stay silent
+// (every teardown path marks the client intentional first). An
+// unmarked exit is a real failure of that node -- e.g. the client
+// crashing the moment the first tunnel is dialed -- so it is
+// logged with the process's exit status verbatim (the raw exit
+// code is itself diagnostic: a Chromium CHECK failure aborts
+// with 0x80000003, for instance) and recorded as a node error.
+// The node error is only recorded while the client still
+// belongs to the current session generation; a stale watcher
+// from an old generation just logs.
+func (m *Manager) watchNaiveExit(nc *naiveClient) {
+	<-nc.done
+	if nc.intentional.Load() {
+		return
+	}
+	m.pushLog(fmt.Sprintf("naive: node %s exited: %v", nc.spec.tag, nc.waitErr))
+	if nc.gen == m.currentGen() {
+		m.setNodeError(nc.spec.nodeID, fmt.Errorf("naive client exited: %v", nc.waitErr))
+	}
+}
+
+func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec, gen uint64) error {
 	cfgMap := map[string]string{
 		"listen": fmt.Sprintf("socks://127.0.0.1:%d", spec.port),
 		"proxy":  spec.proxy,
+		// naiveproxy logs nothing by default (privacy). An empty
+		// "log" value sends its log to stderr instead, which the
+		// scanner goroutine below forwards into the sbgui log --
+		// without it a failing or crashing client is silent, and
+		// its FATAL "Check failed" line (the key to a crash) is
+		// lost.
+		"log": "",
 	}
 	if spec.rules != "" {
 		cfgMap["host-resolver-rules"] = spec.rules
@@ -285,8 +324,11 @@ func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec) error {
 		return err
 	}
 	// The config file carries the password: same 0600 treatment as
-	// store.json, and removed again by stopNaiveClients.
-	cfgPath := filepath.Join(m.workDir, "naive-"+spec.nodeID+".json")
+	// store.json, and removed again by stopNaiveClients. The name
+	// carries the session generation so one generation's teardown
+	// can never delete the file a newer session's client is using
+	// (the path would otherwise be identical across sessions).
+	cfgPath := filepath.Join(m.workDir, fmt.Sprintf("naive-%s-g%d.json", spec.nodeID, gen))
 	if err := os.WriteFile(cfgPath, cfgJSON, 0600); err != nil {
 		return fmt.Errorf("naive: write client config: %w", err)
 	}
@@ -296,7 +338,7 @@ func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec) error {
 		_ = os.Remove(cfgPath)
 		return fmt.Errorf("naive: start client for node %s: %w", spec.tag, err)
 	}
-	nc := &naiveClient{spec: spec, cmd: cmd, cfgPath: cfgPath, done: make(chan struct{})}
+	nc := &naiveClient{spec: spec, cmd: cmd, cfgPath: cfgPath, done: make(chan struct{}), gen: gen}
 	m.nvMu.Lock()
 	m.nvClients = append(m.nvClients, nc)
 	m.nvMu.Unlock()
@@ -322,6 +364,7 @@ func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec) error {
 		}
 		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", spec.port), 200*time.Millisecond); err == nil {
 			c.Close()
+			go m.watchNaiveExit(nc)
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -331,15 +374,28 @@ func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec) error {
 	}
 }
 
-// stopNaiveClients terminates every launched naive client and
-// removes its temp config file. Idempotent: safe to call from every
-// teardown path (Stop, sing-box exit watcher, app shutdown).
-func (m *Manager) stopNaiveClients() {
+// stopNaiveClients terminates the naive clients of session
+// generation gen and removes their temp config files. Clients of
+// other generations are left running: teardown is routinely
+// raced by a following Start (node switching), and the old
+// session's cleanup must not kill the new session's clients.
+// Idempotent: safe to call from every teardown path (Stop,
+// sing-box exit watcher, app shutdown).
+func (m *Manager) stopNaiveClients(gen uint64) {
 	m.nvMu.Lock()
-	clients := m.nvClients
-	m.nvClients = nil
+	var mine []*naiveClient
+	kept := make([]*naiveClient, 0, len(m.nvClients))
+	for _, nc := range m.nvClients {
+		if nc.gen == gen {
+			mine = append(mine, nc)
+		} else {
+			kept = append(kept, nc)
+		}
+	}
+	m.nvClients = kept
 	m.nvMu.Unlock()
-	for _, nc := range clients {
+	for _, nc := range mine {
+		nc.intentional.Store(true)
 		if nc.cmd.Process != nil {
 			_ = nc.cmd.Process.Kill()
 		}

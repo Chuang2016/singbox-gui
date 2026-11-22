@@ -15,12 +15,35 @@ import (
 // Manager controls the sing-box subprocess and, for privproto and
 // naive nodes, the external client subprocesses that front it
 // (see privproto.go and naive.go).
+//
+// Session generations: every Start begins a new generation
+// (Manager.gen). External clients are registered under the
+// generation that launched them, and every teardown path -- Stop,
+// the sing-box exit watcher, Start's own error paths -- names the
+// generation it belongs to and only ever touches that
+// generation's clients.
+//
+// This closes a restart race. Switching nodes is Stop immediately
+// followed by Start, while the old session's sing-box watcher
+// goroutine tears the external clients down asynchronously, and
+// Stop returns as soon as the running flag flips -- before that
+// watcher has necessarily run. The teardown used to drain
+// whatever happened to be in the shared client lists when it
+// executed, so a slow watcher could kill the NEW session's
+// clients seconds after they started (the processes were gone,
+// sing-box got connection refused on their local SOCKS ports)
+// and delete their temp configs, which share the same per-node
+// file name across sessions. Generation-scoped teardown makes
+// the old session's cleanup a no-op for the new session's
+// clients; the temp config files are generation-suffixed for
+// the same reason.
 type Manager struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	workDir string
 	logs    []string
 	running bool
+	gen     uint64
 
 	ppMu      sync.Mutex
 	ppClients []*privprotoClient
@@ -127,14 +150,18 @@ func (m *Manager) Start() error {
 	// node (see NodeErrors) and logged, and sing-box starts
 	// regardless so the remaining nodes keep working.
 	m.clearNodeErrors()
-	m.startPrivprotoClients()
-	m.startNaiveClients()
+	m.mu.Lock()
+	m.gen++
+	gen := m.gen
+	m.mu.Unlock()
+	m.startPrivprotoClients(gen)
+	m.startNaiveClients(gen)
 	bin := singboxBin(m.workDir)
 	cmd := quietCommand(bin, "run", "-c", filepath.Join(m.workDir, "config.json"))
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
-		m.stopPrivprotoClients()
-		m.stopNaiveClients()
+		m.stopPrivprotoClients(gen)
+		m.stopNaiveClients(gen)
 		return fmt.Errorf("start sing-box: %w (is sing-box binary next to sbgui?)", err)
 	}
 	m.mu.Lock()
@@ -151,13 +178,18 @@ func (m *Manager) Start() error {
 	go func() {
 		err := cmd.Wait()
 		m.mu.Lock()
-		m.running = false
-		m.cmd = nil
+		if m.cmd == cmd {
+			m.running = false
+			m.cmd = nil
+		}
 		m.mu.Unlock()
 		// sing-box is gone (stopped or died on its own): the
 		// external clients it fronted have nothing left to serve.
-		m.stopPrivprotoClients()
-		m.stopNaiveClients()
+		// Generation-scoped: this watcher can run late, after a
+		// new session has already started, and must not touch the
+		// new session's clients or state.
+		m.stopPrivprotoClients(gen)
+		m.stopNaiveClients(gen)
 		if err != nil {
 			m.pushLog(fmt.Sprintf("sing-box exited: %v", err))
 		} else {
@@ -170,8 +202,8 @@ func (m *Manager) Start() error {
 	ok := m.running
 	m.mu.Unlock()
 	if !ok {
-		m.stopPrivprotoClients()
-		m.stopNaiveClients()
+		m.stopPrivprotoClients(gen)
+		m.stopNaiveClients(gen)
 		logs := m.Logs()
 		tail := ""
 		if len(logs) > 0 {
@@ -182,14 +214,24 @@ func (m *Manager) Start() error {
 	return nil
 }
 
+// currentGen returns the current session generation.
+func (m *Manager) currentGen() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.gen
+}
+
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	cmd := m.cmd
+	gen := m.gen
 	m.mu.Unlock()
 	// The external clients belong to the session: they are torn
-	// down even when sing-box itself is already gone.
-	defer m.stopPrivprotoClients()
-	defer m.stopNaiveClients()
+	// down even when sing-box itself is already gone. The
+	// teardown names this session's generation, so it can never
+	// touch a newer session's clients.
+	defer m.stopPrivprotoClients(gen)
+	defer m.stopNaiveClients(gen)
 	if cmd == nil || cmd.Process == nil {
 		return fmt.Errorf("not running")
 	}

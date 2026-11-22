@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -82,6 +83,13 @@ type privprotoClient struct {
 	cfgPath string
 	done    chan struct{} // closed once the process has exited
 	waitErr error         // valid after done is closed
+	gen     uint64        // session generation that launched this client
+
+	// intentional is set by every teardown path before it kills
+	// the process, so the exit watcher can tell sbgui's own kills
+	// (expected, silent) from the client dying on its own (a real
+	// failure, logged with its exit status).
+	intentional atomic.Bool
 }
 
 // privprotoSpecs derives the launch specs for the current session:
@@ -147,7 +155,7 @@ func (m *Manager) privprotoSpecs() ([]privprotoSpec, error) {
 // connection. Failures are per-node: a node whose client cannot
 // start is recorded in the Manager's NodeErrors and logged, the
 // remaining clients still launch, and sing-box starts either way.
-func (m *Manager) startPrivprotoClients() {
+func (m *Manager) startPrivprotoClients(gen uint64) {
 	specs, err := m.privprotoSpecs()
 	if err != nil {
 		m.pushLog(fmt.Sprintf("privproto: %v", err))
@@ -165,8 +173,8 @@ func (m *Manager) startPrivprotoClients() {
 		return
 	}
 	for _, spec := range specs {
-		if err := m.startOnePrivprotoClient(bin, spec); err != nil {
-			m.dropPrivprotoClient(spec.nodeID)
+		if err := m.startOnePrivprotoClient(bin, spec, gen); err != nil {
+			m.dropPrivprotoClient(gen, spec.nodeID)
 			m.setNodeError(spec.nodeID, err)
 			m.pushLog(fmt.Sprintf("privproto: node %s failed: %v", spec.tag, err))
 			continue
@@ -176,14 +184,15 @@ func (m *Manager) startPrivprotoClients() {
 }
 
 // dropPrivprotoClient terminates and forgets the one client
-// belonging to nodeID (a client that failed its startup wait).
-// Other clients are untouched.
-func (m *Manager) dropPrivprotoClient(nodeID string) {
+// belonging to nodeID in generation gen (a client that failed
+// its startup wait). Clients of other generations -- and other
+// nodes -- are untouched.
+func (m *Manager) dropPrivprotoClient(gen uint64, nodeID string) {
 	m.ppMu.Lock()
 	var dropped *privprotoClient
 	kept := make([]*privprotoClient, 0, len(m.ppClients))
 	for _, pc := range m.ppClients {
-		if pc.spec.nodeID == nodeID {
+		if pc.gen == gen && pc.spec.nodeID == nodeID {
 			dropped = pc
 		} else {
 			kept = append(kept, pc)
@@ -194,6 +203,7 @@ func (m *Manager) dropPrivprotoClient(nodeID string) {
 	if dropped == nil {
 		return
 	}
+	dropped.intentional.Store(true)
 	if dropped.cmd.Process != nil {
 		_ = dropped.cmd.Process.Kill()
 	}
@@ -204,7 +214,22 @@ func (m *Manager) dropPrivprotoClient(nodeID string) {
 	_ = os.Remove(dropped.cfgPath)
 }
 
-func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec) error {
+// watchPrivprotoExit is the privproto twin of watchNaiveExit: a
+// client that dies on its own after a successful start is logged
+// with its exit status verbatim and recorded as a node error;
+// teardown kills (marked intentional first) stay silent.
+func (m *Manager) watchPrivprotoExit(pc *privprotoClient) {
+	<-pc.done
+	if pc.intentional.Load() {
+		return
+	}
+	m.pushLog(fmt.Sprintf("privproto: node %s exited: %v", pc.spec.tag, pc.waitErr))
+	if pc.gen == m.currentGen() {
+		m.setNodeError(pc.spec.nodeID, fmt.Errorf("privproto client exited: %v", pc.waitErr))
+	}
+}
+
+func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec, gen uint64) error {
 	cfgJSON, err := json.Marshal(map[string]string{
 		"server":   spec.server,
 		"password": spec.password,
@@ -214,8 +239,12 @@ func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec) error 
 		return err
 	}
 	// The config file carries the password: same 0600 treatment as
-	// store.json, and removed again by stopPrivprotoClients.
-	cfgPath := filepath.Join(m.workDir, "privproto-"+spec.nodeID+".json")
+	// store.json, and removed again by stopPrivprotoClients. The
+	// name carries the session generation so one generation's
+	// teardown can never delete the file a newer session's client
+	// is using (the path would otherwise be identical across
+	// sessions).
+	cfgPath := filepath.Join(m.workDir, fmt.Sprintf("privproto-%s-g%d.json", spec.nodeID, gen))
 	if err := os.WriteFile(cfgPath, cfgJSON, 0600); err != nil {
 		return fmt.Errorf("privproto: write client config: %w", err)
 	}
@@ -225,7 +254,7 @@ func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec) error 
 		_ = os.Remove(cfgPath)
 		return fmt.Errorf("privproto: start client for node %s: %w", spec.tag, err)
 	}
-	pc := &privprotoClient{spec: spec, cmd: cmd, cfgPath: cfgPath, done: make(chan struct{})}
+	pc := &privprotoClient{spec: spec, cmd: cmd, cfgPath: cfgPath, done: make(chan struct{}), gen: gen}
 	m.ppMu.Lock()
 	m.ppClients = append(m.ppClients, pc)
 	m.ppMu.Unlock()
@@ -252,6 +281,7 @@ func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec) error 
 		}
 		if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", spec.port), 200*time.Millisecond); err == nil {
 			c.Close()
+			go m.watchPrivprotoExit(pc)
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -261,15 +291,26 @@ func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec) error 
 	}
 }
 
-// stopPrivprotoClients terminates every launched privproto-client
-// and removes its temp config file. Idempotent: safe to call from
-// every teardown path (Stop, sing-box exit watcher, app shutdown).
-func (m *Manager) stopPrivprotoClients() {
+// stopPrivprotoClients terminates the privproto clients of
+// session generation gen and removes their temp config files.
+// Clients of other generations are left running (see
+// stopNaiveClients for why). Idempotent: safe to call from every
+// teardown path (Stop, sing-box exit watcher, app shutdown).
+func (m *Manager) stopPrivprotoClients(gen uint64) {
 	m.ppMu.Lock()
-	clients := m.ppClients
-	m.ppClients = nil
+	var mine []*privprotoClient
+	kept := make([]*privprotoClient, 0, len(m.ppClients))
+	for _, pc := range m.ppClients {
+		if pc.gen == gen {
+			mine = append(mine, pc)
+		} else {
+			kept = append(kept, pc)
+		}
+	}
+	m.ppClients = kept
 	m.ppMu.Unlock()
-	for _, pc := range clients {
+	for _, pc := range mine {
+		pc.intentional.Store(true)
 		if pc.cmd.Process != nil {
 			_ = pc.cmd.Process.Kill()
 		}

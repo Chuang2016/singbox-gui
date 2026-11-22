@@ -35,7 +35,7 @@ var demoLinks = []string{
 
 // guiVersion labels this front-end build (the Walk front-end and
 // the web back-end carry their own version strings).
-const guiVersion = "1.1.0-gui-preview.11-gui"
+const guiVersion = "1.1.0-gui-preview.12-gui"
 
 const (
 	pageNodes = "nodes"
