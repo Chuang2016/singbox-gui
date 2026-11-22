@@ -12,7 +12,25 @@ import (
 
 // ParseShareLink parses one proxy share link into (protocol, sing-box outbound fragment, error).
 // The fragment has no "tag"; the caller assigns it.
+//
+// A link whose server port is 0 is rejected: port 0 in an
+// exported link marks a server-side placeholder (e.g. the detour
+// companion inbound S-UI lists next to a shadowtls node), never a
+// node a client could dial, and importing it would only produce
+// a node that fails every test. Callers count the rejection like
+// any other unparsable line.
 func ParseShareLink(link string) (string, map[string]any, error) {
+	proto, ob, err := parseShareLink(link)
+	if err != nil {
+		return "", nil, err
+	}
+	if p, ok := ob["server_port"]; ok && anyInt(p) == 0 {
+		return "", nil, fmt.Errorf("invalid server port 0")
+	}
+	return proto, ob, nil
+}
+
+func parseShareLink(link string) (string, map[string]any, error) {
 	link = strings.TrimSpace(link)
 	if link == "" {
 		return "", nil, fmt.Errorf("empty link")
@@ -34,6 +52,11 @@ func ParseShareLink(link string) (string, map[string]any, error) {
 		return parseAnytls(link)
 	case strings.HasPrefix(link, "privproto://"):
 		return parsePrivproto(link)
+	case strings.HasPrefix(link, "naive+https://") || strings.HasPrefix(link, "naive+quic://") ||
+		strings.HasPrefix(link, "naive://"):
+		return parseNaive(link)
+	case strings.HasPrefix(link, "http2://"):
+		return parseHTTP2Naive(link)
 	default:
 		return "", nil, fmt.Errorf("unsupported scheme")
 	}
@@ -247,6 +270,28 @@ func applyStream(ob map[string]any, net_, type_, host, path, tls, sni, alpn, fp,
 	}
 	if type_ == "" || type_ == "none" {
 		// plain tcp, nothing to add
+	}
+	if net_ == "ws" || net_ == "httpupgrade" {
+		// These transports speak HTTP/1.1. If "h2" is offered in
+		// the TLS ALPN list and the server negotiates it -- a CDN
+		// edge in front of the node does -- the TLS handshake
+		// succeeds but the HTTP/1.1 upgrade then dies with EOF.
+		// Drop "h2" so the negotiation lands on http/1.1.
+		if t, ok := ob["tls"].(map[string]any); ok {
+			if alpn, ok := t["alpn"].([]string); ok {
+				kept := make([]string, 0, len(alpn))
+				for _, a := range alpn {
+					if a != "h2" {
+						kept = append(kept, a)
+					}
+				}
+				if len(kept) == 0 {
+					delete(t, "alpn")
+				} else {
+					t["alpn"] = kept
+				}
+			}
+		}
 	}
 }
 
@@ -508,6 +553,111 @@ func BuildPrivprotoLink(password, host string, port int, name string) string {
 		Fragment: name,
 	}
 	return u.String()
+}
+
+// ---------- naive ----------
+
+// parseHTTP2Naive parses the http2:// form some panels (S-UI
+// among them) emit for naive inbounds: the whole authority is
+// base64 of "user:password@host:port", with the usual query
+// parameters and #name behind it. It is the https transport,
+// equivalent to a naive+https:// link.
+func parseHTTP2Naive(link string) (string, map[string]any, error) {
+	rest := strings.TrimPrefix(link, "http2://")
+	if i := strings.Index(rest, "?"); i >= 0 {
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, "#"); i >= 0 {
+		rest = rest[:i]
+	}
+	raw, err := b64decode(rest)
+	if err != nil {
+		return "", nil, fmt.Errorf("http2 naive decode: %w", err)
+	}
+	s := string(raw)
+	at := strings.LastIndex(s, "@")
+	if at < 0 {
+		return "", nil, fmt.Errorf("http2 naive bad format")
+	}
+	user, password, _ := strings.Cut(s[:at], ":")
+	u := url.URL{
+		Scheme: "https",
+		User:   url.UserPassword(user, password),
+		Host:   s[at+1:],
+	}
+	return parseNaive("naive+" + u.String())
+}
+
+// parseNaive parses naive+https://<user>:<pass>@<host>[:<port>]#<name>
+// and the naive+quic:// variant (a bare naive:// is treated as the
+// https form). Like privproto, naive is not a sing-box protocol: the
+// stored fragment (type "naive") carries the parameters for the
+// standalone naive client, and BuildConfig translates the node into
+// a plain socks outbound pointing at that client's local port (see
+// core/naive.go for the runtime side). The upstream transport
+// ("https" or "quic") is kept in "network" so the client manager
+// can rebuild the exact --proxy URL.
+func parseNaive(link string) (string, map[string]any, error) {
+	inner := link
+	network := "https"
+	switch {
+	case strings.HasPrefix(link, "naive+https://"):
+		inner = strings.TrimPrefix(link, "naive+")
+	case strings.HasPrefix(link, "naive+quic://"):
+		inner = strings.TrimPrefix(link, "naive+")
+		network = "quic"
+	case strings.HasPrefix(link, "naive://"):
+		// bare form: no explicit transport, https is the default
+		inner = "https://" + strings.TrimPrefix(link, "naive://")
+	default:
+		return "", nil, fmt.Errorf("naive bad scheme")
+	}
+	u, err := url.Parse(inner)
+	if err != nil {
+		return "", nil, fmt.Errorf("naive url: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "quic" {
+		return "", nil, fmt.Errorf("naive unsupported transport %q", u.Scheme)
+	}
+	network = u.Scheme
+	host := u.Hostname()
+	if host == "" {
+		return "", nil, fmt.Errorf("naive missing host")
+	}
+	port := 443
+	if ps := u.Port(); ps != "" {
+		p, err := strconv.Atoi(ps)
+		if err != nil || p <= 0 || p > 65535 {
+			return "", nil, fmt.Errorf("naive bad port %q", ps)
+		}
+		port = p
+	}
+	user := u.User.Username()
+	password, _ := u.User.Password()
+	if user == "" || password == "" {
+		return "", nil, fmt.Errorf("naive missing username or password")
+	}
+	ob := map[string]any{
+		"type": "naive", "server": host, "server_port": port,
+		"username": user, "password": password, "network": network,
+	}
+	return "naive", ob, nil
+}
+
+// BuildNaiveLink renders a naive share link from its parts,
+// URL-escaping the credentials (and the display name) so passwords
+// with URL-significant characters survive the round trip.
+func BuildNaiveLink(network, user, password, host string, port int, name string) string {
+	if network != "quic" {
+		network = "https"
+	}
+	u := url.URL{
+		Scheme:   network,
+		User:     url.UserPassword(user, password),
+		Host:     net.JoinHostPort(host, strconv.Itoa(port)),
+		Fragment: name,
+	}
+	return "naive+" + u.String()
 }
 
 // ---------- anytls ----------

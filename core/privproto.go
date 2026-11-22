@@ -142,29 +142,66 @@ func (m *Manager) privprotoSpecs() ([]privprotoSpec, error) {
 	return specs, nil
 }
 
-// startPrivprotoClients launches one privproto-client per privproto
-// node and waits until each local SOCKS port accepts a connection.
-// On any failure everything launched so far is torn down again.
-func (m *Manager) startPrivprotoClients() error {
+// startPrivprotoClients launches one privproto-client per
+// privproto node and waits until each local SOCKS port accepts a
+// connection. Failures are per-node: a node whose client cannot
+// start is recorded in the Manager's NodeErrors and logged, the
+// remaining clients still launch, and sing-box starts either way.
+func (m *Manager) startPrivprotoClients() {
 	specs, err := m.privprotoSpecs()
 	if err != nil {
-		return err
+		m.pushLog(fmt.Sprintf("privproto: %v", err))
+		return
 	}
 	if len(specs) == 0 {
-		return nil
+		return
 	}
 	bin, err := privprotoClientBin(m.workDir)
 	if err != nil {
-		return err
+		for _, spec := range specs {
+			m.setNodeError(spec.nodeID, err)
+			m.pushLog(fmt.Sprintf("privproto: node %s failed: %v", spec.tag, err))
+		}
+		return
 	}
 	for _, spec := range specs {
 		if err := m.startOnePrivprotoClient(bin, spec); err != nil {
-			m.stopPrivprotoClients()
-			return err
+			m.dropPrivprotoClient(spec.nodeID)
+			m.setNodeError(spec.nodeID, err)
+			m.pushLog(fmt.Sprintf("privproto: node %s failed: %v", spec.tag, err))
+			continue
 		}
 		m.pushLog(fmt.Sprintf("privproto: node %s via 127.0.0.1:%d", spec.tag, spec.port))
 	}
-	return nil
+}
+
+// dropPrivprotoClient terminates and forgets the one client
+// belonging to nodeID (a client that failed its startup wait).
+// Other clients are untouched.
+func (m *Manager) dropPrivprotoClient(nodeID string) {
+	m.ppMu.Lock()
+	var dropped *privprotoClient
+	kept := make([]*privprotoClient, 0, len(m.ppClients))
+	for _, pc := range m.ppClients {
+		if pc.spec.nodeID == nodeID {
+			dropped = pc
+		} else {
+			kept = append(kept, pc)
+		}
+	}
+	m.ppClients = kept
+	m.ppMu.Unlock()
+	if dropped == nil {
+		return
+	}
+	if dropped.cmd.Process != nil {
+		_ = dropped.cmd.Process.Kill()
+	}
+	select {
+	case <-dropped.done:
+	case <-time.After(3 * time.Second):
+	}
+	_ = os.Remove(dropped.cfgPath)
 }
 
 func (m *Manager) startOnePrivprotoClient(bin string, spec privprotoSpec) error {

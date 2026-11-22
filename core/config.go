@@ -29,41 +29,43 @@ func BuildConfig(d StoreData, workDir string) (string, error) {
 		}
 	}
 
-	// privproto nodes are not sing-box outbounds: each is served by a
-	// privproto-client subprocess exposing a local SOCKS5 port, which
-	// the Manager launches alongside sing-box (see core/privproto.go).
-	// The generated outbound is a plain socks outbound pointing at
-	// that port. Ports are probed free here (all listeners held until
-	// every port is assigned, then released) and read back from the
-	// written config.json by the Manager at start time. The privproto
-	// password never enters the sing-box config.
-	ppPorts := map[string]int{}
-	var ppLn []net.Listener
+	// privproto and naive nodes are not sing-box outbounds: each is
+	// served by an external client subprocess (privproto-client /
+	// naive) exposing a local SOCKS5 port, which the Manager
+	// launches alongside sing-box (see core/privproto.go and
+	// core/naive.go). The generated outbound is a plain socks
+	// outbound pointing at that port. Ports are probed free here
+	// (all listeners held until every port is assigned, then
+	// released) and read back from the written config.json by the
+	// Manager at start time. The node credentials never enter the
+	// sing-box config.
+	extPorts := map[string]int{}
+	var extLn []net.Listener
 	for _, n := range d.Nodes {
-		if !IsPrivprotoNode(n) {
+		if !IsPrivprotoNode(n) && !IsNaiveNode(n) {
 			continue
 		}
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			for _, l := range ppLn {
+			for _, l := range extLn {
 				l.Close()
 			}
-			return "", fmt.Errorf("privproto: reserve local port: %w", err)
+			return "", fmt.Errorf("external client node: reserve local port: %w", err)
 		}
-		ppLn = append(ppLn, ln)
-		ppPorts[n.ID] = ln.Addr().(*net.TCPAddr).Port
+		extLn = append(extLn, ln)
+		extPorts[n.ID] = ln.Addr().(*net.TCPAddr).Port
 	}
-	for _, l := range ppLn {
+	for _, l := range extLn {
 		l.Close()
 	}
 
 	outbounds := []any{}
 	for _, n := range d.Nodes {
 		var ob map[string]any
-		if IsPrivprotoNode(n) {
+		if IsPrivprotoNode(n) || IsNaiveNode(n) {
 			ob = map[string]any{
 				"type": "socks", "server": "127.0.0.1",
-				"server_port": ppPorts[n.ID], "version": "5",
+				"server_port": extPorts[n.ID], "version": "5",
 			}
 		} else {
 			ob = map[string]any{}

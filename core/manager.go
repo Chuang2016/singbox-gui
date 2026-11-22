@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// Manager controls the sing-box subprocess and, for privproto
-// nodes, the privproto-client subprocesses that front it
-// (see privproto.go).
+// Manager controls the sing-box subprocess and, for privproto and
+// naive nodes, the external client subprocesses that front it
+// (see privproto.go and naive.go).
 type Manager struct {
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -24,6 +24,12 @@ type Manager struct {
 
 	ppMu      sync.Mutex
 	ppClients []*privprotoClient
+
+	nvMu      sync.Mutex
+	nvClients []*naiveClient
+
+	extErrMu sync.Mutex
+	nodeErrs map[string]string
 }
 
 func NewManager(workDir string) *Manager {
@@ -72,6 +78,36 @@ func (m *Manager) Running() bool {
 	return m.running
 }
 
+// NodeErrors returns the per-node startup errors recorded for
+// nodes served by external client subprocesses (privproto /
+// naive) in the current session, keyed by node ID. A node listed
+// here is down because its client could not start; every other
+// node is unaffected. The same failures are in the log.
+func (m *Manager) NodeErrors() map[string]string {
+	m.extErrMu.Lock()
+	defer m.extErrMu.Unlock()
+	out := make(map[string]string, len(m.nodeErrs))
+	for id, e := range m.nodeErrs {
+		out[id] = e
+	}
+	return out
+}
+
+func (m *Manager) setNodeError(id string, err error) {
+	m.extErrMu.Lock()
+	defer m.extErrMu.Unlock()
+	if m.nodeErrs == nil {
+		m.nodeErrs = map[string]string{}
+	}
+	m.nodeErrs[id] = err.Error()
+}
+
+func (m *Manager) clearNodeErrors() {
+	m.extErrMu.Lock()
+	defer m.extErrMu.Unlock()
+	m.nodeErrs = map[string]string{}
+}
+
 // Start launches sing-box. Returns error if already running or check fails.
 func (m *Manager) Start() error {
 	m.mu.Lock()
@@ -84,16 +120,21 @@ func (m *Manager) Start() error {
 	if out, err := m.Check(); err != nil {
 		return fmt.Errorf("config check failed: %v\n%s", err, out)
 	}
-	// privproto clients must be accepting before sing-box starts
-	// routing through their socks outbounds.
-	if err := m.startPrivprotoClients(); err != nil {
-		return err
-	}
+	// privproto and naive clients must be accepting before sing-box
+	// starts routing through their socks outbounds. A client that
+	// fails to start (binary missing, bad node parameters, ...)
+	// takes down only its own node: the failure is recorded per
+	// node (see NodeErrors) and logged, and sing-box starts
+	// regardless so the remaining nodes keep working.
+	m.clearNodeErrors()
+	m.startPrivprotoClients()
+	m.startNaiveClients()
 	bin := singboxBin(m.workDir)
 	cmd := quietCommand(bin, "run", "-c", filepath.Join(m.workDir, "config.json"))
 	stderr, _ := cmd.StderrPipe()
 	if err := cmd.Start(); err != nil {
 		m.stopPrivprotoClients()
+		m.stopNaiveClients()
 		return fmt.Errorf("start sing-box: %w (is sing-box binary next to sbgui?)", err)
 	}
 	m.mu.Lock()
@@ -114,8 +155,9 @@ func (m *Manager) Start() error {
 		m.cmd = nil
 		m.mu.Unlock()
 		// sing-box is gone (stopped or died on its own): the
-		// privproto clients it fronted have nothing left to serve.
+		// external clients it fronted have nothing left to serve.
 		m.stopPrivprotoClients()
+		m.stopNaiveClients()
 		if err != nil {
 			m.pushLog(fmt.Sprintf("sing-box exited: %v", err))
 		} else {
@@ -129,6 +171,7 @@ func (m *Manager) Start() error {
 	m.mu.Unlock()
 	if !ok {
 		m.stopPrivprotoClients()
+		m.stopNaiveClients()
 		logs := m.Logs()
 		tail := ""
 		if len(logs) > 0 {
@@ -143,9 +186,10 @@ func (m *Manager) Stop() error {
 	m.mu.Lock()
 	cmd := m.cmd
 	m.mu.Unlock()
-	// The privproto clients belong to the session: they are torn
+	// The external clients belong to the session: they are torn
 	// down even when sing-box itself is already gone.
 	defer m.stopPrivprotoClients()
+	defer m.stopNaiveClients()
 	if cmd == nil || cmd.Process == nil {
 		return fmt.Errorf("not running")
 	}
