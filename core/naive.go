@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -29,6 +30,17 @@ import (
 //   - the Manager launches one naive client per naive node before
 //     it starts sing-box, waits for each SOCKS port to accept, and
 //     kills every client again when the session ends.
+//
+// IPv4 pinning: when a node's server is a domain name, Start
+// resolves its A record and writes a "host-resolver-rules" entry
+// (MAP <domain> <ipv4>) into the client config. naiveproxy's
+// Chromium resolver otherwise prefers AAAA whenever one exists,
+// which black-holes the tunnel on networks without working IPv6
+// (the connection is attempted over v6 and never falls back in
+// time). The proxy URL keeps the original domain, so TLS SNI and
+// certificate verification are unaffected. IP-literal servers,
+// failed lookups and AAAA-only domains get no rule and launch
+// exactly as before.
 //
 // One deliberate difference from privproto: the client is launched
 // with a JSON config file (naive accepts `naive <config.json>` as
@@ -77,6 +89,7 @@ type naiveSpec struct {
 	tag    string
 	proxy  string // full upstream URL for the client's "proxy" option
 	port   int    // local SOCKS5 port from the generated config
+	rules  string // "host-resolver-rules" value pinning the server domain to IPv4, "" = none
 }
 
 type naiveClient struct {
@@ -107,6 +120,35 @@ func naiveProxyURL(ob map[string]any) (string, error) {
 		Host:   net.JoinHostPort(host, fmt.Sprint(port)),
 	}
 	return u.String(), nil
+}
+
+// naiveLookupIP is the A/AAAA lookup used for IPv4 pinning; a
+// variable so tests can stub DNS.
+var naiveLookupIP = func(ctx context.Context, host string) ([]net.IP, error) {
+	return net.DefaultResolver.LookupIP(ctx, "ip4", host)
+}
+
+// naivePinIPv4 returns a Chromium host-resolver-rules value that
+// statically maps host to its first IPv4 (A) address, e.g.
+// "MAP example.com 203.0.113.7". It returns "" whenever pinning
+// does not apply: host is empty or an IP literal (v4 or v6), the
+// lookup fails, or the name has no A record.
+func naivePinIPv4(host string) string {
+	if host == "" || net.ParseIP(host) != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ips, err := naiveLookupIP(ctx, host)
+	if err != nil {
+		return ""
+	}
+	for _, ip := range ips {
+		if ip4 := ip.To4(); ip4 != nil {
+			return "MAP " + host + " " + ip4.String()
+		}
+	}
+	return ""
 }
 
 // naiveSpecs derives the launch specs for the current session: node
@@ -156,8 +198,10 @@ func (m *Manager) naiveSpecs() ([]naiveSpec, error) {
 		if !ok || socksPort == 0 {
 			return nil, fmt.Errorf("naive: node %s has no socks outbound in the generated config", n.Tag)
 		}
+		server, _ := n.Outbound["server"].(string)
 		specs = append(specs, naiveSpec{
 			nodeID: n.ID, tag: n.Tag, proxy: proxy, port: socksPort,
+			rules: naivePinIPv4(server),
 		})
 	}
 	return specs, nil
@@ -193,6 +237,9 @@ func (m *Manager) startNaiveClients() {
 			continue
 		}
 		m.pushLog(fmt.Sprintf("naive: node %s via 127.0.0.1:%d", spec.tag, spec.port))
+		if spec.rules != "" {
+			m.pushLog(fmt.Sprintf("naive: node %s pins %s", spec.tag, spec.rules))
+		}
 	}
 }
 
@@ -226,10 +273,14 @@ func (m *Manager) dropNaiveClient(nodeID string) {
 }
 
 func (m *Manager) startOneNaiveClient(bin string, spec naiveSpec) error {
-	cfgJSON, err := json.Marshal(map[string]string{
+	cfgMap := map[string]string{
 		"listen": fmt.Sprintf("socks://127.0.0.1:%d", spec.port),
 		"proxy":  spec.proxy,
-	})
+	}
+	if spec.rules != "" {
+		cfgMap["host-resolver-rules"] = spec.rules
+	}
+	cfgJSON, err := json.Marshal(cfgMap)
 	if err != nil {
 		return err
 	}

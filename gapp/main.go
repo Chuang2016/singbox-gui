@@ -49,7 +49,7 @@ var demoLinks = []string{
 }
 
 // gioVersion labels this front-end build.
-const gioVersion = "1.1.0-gui-preview.10-gio"
+const gioVersion = "1.1.0-gui-preview.11-gio"
 
 const (
 	pageNodes = "nodes"
