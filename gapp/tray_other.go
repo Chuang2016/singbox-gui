@@ -11,3 +11,4 @@ func setupTray(a *App) bool               { return false }
 func traySetStatus(status, toggle string) {}
 func trayHideWindow()                     {}
 func trayShowWindow()                     {}
+func trayCloseWindow()                    {}

@@ -34,7 +34,6 @@ import (
 
 	"gioui.org/app"
 	"gioui.org/font"
-	"gioui.org/io/system"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -56,7 +55,7 @@ var demoLinks = []string{
 }
 
 // gioVersion labels this front-end build.
-const gioVersion = "1.1.0-gui-preview.13-gio"
+const gioVersion = "1.1.0-gui-preview.14-gio"
 
 const (
 	pageNodes = "nodes"
@@ -124,6 +123,18 @@ type App struct {
 	// DestroyEvent.
 	trayOK   atomic.Bool
 	trayQuit atomic.Bool
+	// windowHidden is set the moment a close is vetoed (before
+	// the bridge's async hide runs) and cleared by the bridge's
+	// shown callback once the window is ordered front again.
+	// While it is set, nothing may invalidate the Gio window: a
+	// frame requested for an ordered-out window may never
+	// complete, and a stuck frame wedges Gio's main-thread event
+	// rendezvous for good (the preview.13 reopen freeze).
+	windowHidden atomic.Bool
+	// showReqAt is the Unix-nano time of the last tray Show
+	// request; the once-a-second ticker uses it to self-heal if
+	// a shown callback is ever lost.
+	showReqAt atomic.Int64
 
 	nodes nodesPage
 	subs  subsPage
@@ -135,7 +146,13 @@ func (a *App) post(fn func()) {
 	a.inboxMu.Lock()
 	a.inbox = append(a.inbox, fn)
 	a.inboxMu.Unlock()
-	a.w.Invalidate()
+	// While the window is hidden the queued func simply waits:
+	// invalidating an ordered-out window risks a frame that can
+	// never complete. drainInbox runs it on the first frame
+	// after the window is shown again.
+	if !a.windowHidden.Load() {
+		a.w.Invalidate()
+	}
 }
 
 func (a *App) drainInbox() {
@@ -407,30 +424,67 @@ func (a *App) trayToggleText() string {
 	return "Connect"
 }
 
+// trayReady is the bridge's ready callback: the status item
+// exists, so residency is live and closes start being vetoed.
+// It runs on the main thread and only flips the flag and logs.
+func (a *App) trayReady() {
+	if a.trayOK.Swap(true) {
+		return
+	}
+	a.logf("Menu bar icon installed; closing the window now hides it")
+}
+
 // showFromTray restores the window from the menu bar. It runs on
-// the tray callback thread and only queues AppKit/Gio work.
+// the AppKit main thread (a menu action) and must stay O(1): it
+// records the request and makes one fire-and-forget bridge call.
+// It deliberately does NOT invalidate the Gio window here — in
+// preview.13 that call synchronously drove a frame delivery on
+// the main thread while the window was still ordered out, which
+// is the reopen freeze. The bridge reports back through
+// shownFromTray once the window is actually front.
 func (a *App) showFromTray() {
+	if !a.windowHidden.Load() {
+		return
+	}
+	a.showReqAt.Store(time.Now().UnixNano())
 	trayShowWindow()
+}
+
+// shownFromTray is the bridge's shown callback: the window has
+// been ordered front on the main queue, so asking Gio for a
+// frame is safe again.
+func (a *App) shownFromTray() {
+	a.windowHidden.Store(false)
+	a.showReqAt.Store(0)
 	if a.w != nil {
 		a.w.Invalidate()
 	}
 }
 
 // quitFromTray quits via the tray menu: flag the quit so the
-// close is not vetoed, then ask Gio to close the window;
-// DestroyEvent runs quit() and main returns.
+// close is not vetoed, then close the window through the
+// bridge's native performClose. The close arrives as a regular
+// Gio close request and falls through to DestroyEvent, where
+// quit() runs. (Preview.13 used Window.Perform here, whose
+// Window.Run wrapper blocks the calling thread until the driver
+// func completes — another main-thread rendezvous, removed.)
 func (a *App) quitFromTray() {
 	a.trayQuit.Store(true)
-	if a.w != nil {
-		a.w.Perform(system.ActionClose)
-	}
+	trayCloseWindow()
 }
 
 // toggleFromTray connects or disconnects from the tray menu.
-// Unlike toggle() it does not rely on window frames or the UI
-// busy flag, so it works while the window is hidden; the blocking
-// core calls run on their own goroutines exactly as in toggle().
+// It runs on the AppKit main thread, so it only hands off to a
+// goroutine; the work itself is toggleFromTrayWork.
 func (a *App) toggleFromTray() {
+	go a.toggleFromTrayWork()
+}
+
+// toggleFromTrayWork is toggleFromTray's body. Unlike toggle()
+// it does not rely on window frames or the UI busy flag, so it
+// works while the window is hidden; the blocking core calls run
+// on their own goroutines exactly as in toggle().
+func (a *App) toggleFromTrayWork() {
 	if a.initErr != nil || a.mgr == nil {
 		return
 	}
@@ -469,6 +523,10 @@ func (a *App) run() {
 			// through to DestroyEvent and quit().
 			if a.trayOK.Load() && !a.trayQuit.Load() {
 				e.Abort()
+				// Mark hidden before the bridge's async hide
+				// runs, so the ticker and post() stop
+				// invalidating the window immediately.
+				a.windowHidden.Store(true)
 				trayHideWindow()
 				a.logf("Window hidden to the menu bar; proxy keeps running")
 			}
@@ -687,7 +745,24 @@ func main() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		for range t.C {
-			a.w.Invalidate()
+			if a.windowHidden.Load() {
+				// No invalidations while hidden (a frame for
+				// an ordered-out window may never complete).
+				// Self-heal: if a Show was requested more
+				// than 2 s ago but the shown callback never
+				// arrived, treat the window as shown — the
+				// bridge's show block runs on the main queue
+				// within milliseconds on a healthy app, so
+				// this only fires if the callback was lost.
+				if at := a.showReqAt.Load(); at != 0 &&
+					time.Since(time.Unix(0, at)) > 2*time.Second {
+					a.windowHidden.Store(false)
+					a.showReqAt.Store(0)
+					a.w.Invalidate()
+				}
+			} else {
+				a.w.Invalidate()
+			}
 			if a.trayOK.Load() {
 				traySetStatus(a.trayStatusText(), a.trayToggleText())
 			}
@@ -696,14 +771,12 @@ func main() {
 	// Install the macOS menu-bar tray (a no-op stub elsewhere).
 	// It must run concurrently with app.Main below: creating the
 	// status item is dispatched to the main queue, which only
-	// starts turning once the NSApp run loop is up. Until setup
-	// confirms the item exists, trayOK stays false and closing
-	// the window keeps its historical quit behaviour.
+	// starts turning once the NSApp run loop is up. The bridge
+	// reports through trayReady once the item exists; until
+	// then, trayOK stays false and closing the window keeps its
+	// historical quit behaviour.
 	go func() {
-		if setupTray(a) {
-			a.trayOK.Store(true)
-			a.logf("Menu bar icon installed; closing the window now hides it")
-		}
+		setupTray(a)
 	}()
 	go func() {
 		a.run()

@@ -56,7 +56,12 @@ type Manager struct {
 }
 
 func NewManager(workDir string) *Manager {
-	return &Manager{workDir: workDir, logs: []string{}}
+	m := &Manager{workDir: workDir, logs: []string{}}
+	// App start: clear out a sing-box orphaned by a previous
+	// run that was force-quit, before it can block this run's
+	// ports (see stale.go for the exact signature).
+	m.cleanupStaleSingbox()
+	return m
 }
 
 func singboxBin(workDir string) string {
@@ -139,6 +144,11 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("already running")
 	}
 	m.mu.Unlock()
+
+	// A leftover from a force-quit run may have appeared while
+	// this instance was open; clear it before it can block the
+	// ports (the sweep never touches a live-owned sing-box).
+	m.cleanupStaleSingbox()
 
 	if out, err := m.Check(); err != nil {
 		return fmt.Errorf("config check failed: %v\n%s", err, out)

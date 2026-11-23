@@ -9,9 +9,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>org.trustclover.sbgui</string>
 	<key>CFBundleVersion</key>
-	<string>1.1.0.13</string>
+	<string>1.1.0.14</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1.0-gui-preview.13</string>
+	<string>1.1.0-gui-preview.14</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
