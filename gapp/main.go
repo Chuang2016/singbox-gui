@@ -13,9 +13,14 @@
 // bottom. All behaviour comes from the shared core package.
 //
 // Differences from the Fyne build, forced by Gio's toolkit surface:
-//   - no system tray (Gio has none): closing the window quits, with
-//     the same cleanup as the Fyne tray Quit (clear OS proxy, stop
-//     sing-box, flush traffic totals);
+//   - on macOS, a menu-bar status item (tray_darwin.go, a small
+//     cgo/AppKit bridge, since Gio has no tray API): closing the
+//     window hides it and the core keeps running; the menu offers
+//     Show Window, Connect/Disconnect and Quit. Quit performs the
+//     same cleanup as the Fyne tray Quit (clear OS proxy, stop
+//     sing-box, flush traffic totals). When the tray is absent
+//     (non-macOS builds, or the status item could not be created),
+//     closing the window quits with that same cleanup;
 //   - dialogs are modal cards drawn inside the window.
 package main
 
@@ -24,10 +29,12 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gioui.org/app"
 	"gioui.org/font"
+	"gioui.org/io/system"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -49,7 +56,7 @@ var demoLinks = []string{
 }
 
 // gioVersion labels this front-end build.
-const gioVersion = "1.1.0-gui-preview.12-gio"
+const gioVersion = "1.1.0-gui-preview.13-gio"
 
 const (
 	pageNodes = "nodes"
@@ -110,6 +117,13 @@ type App struct {
 	modal     modal
 	modalBg   widget.Clickable
 	quitClean bool
+
+	// Menu-bar residency (macOS; tray_darwin.go). trayOK is set
+	// once the status item exists; trayQuit is set by the tray
+	// Quit item so its close is not vetoed and reaches
+	// DestroyEvent.
+	trayOK   atomic.Bool
+	trayQuit atomic.Bool
 
 	nodes nodesPage
 	subs  subsPage
@@ -368,10 +382,96 @@ func (a *App) quit() {
 	}
 }
 
+// trayStatusText is the tray menu's status line: connection
+// state and the active node.
+func (a *App) trayStatusText() string {
+	if a.initErr != nil || a.mgr == nil {
+		return "sbgui — unavailable"
+	}
+	state := "Stopped"
+	if a.mgr.Running() {
+		state = "Running"
+	}
+	node := "none"
+	if n := a.activeNode(); n != nil {
+		node = n.Tag
+	}
+	return fmt.Sprintf("sbgui — %s · node %s", state, node)
+}
+
+// trayToggleText labels the tray menu's Connect/Disconnect item.
+func (a *App) trayToggleText() string {
+	if a.mgr != nil && a.mgr.Running() {
+		return "Disconnect"
+	}
+	return "Connect"
+}
+
+// showFromTray restores the window from the menu bar. It runs on
+// the tray callback thread and only queues AppKit/Gio work.
+func (a *App) showFromTray() {
+	trayShowWindow()
+	if a.w != nil {
+		a.w.Invalidate()
+	}
+}
+
+// quitFromTray quits via the tray menu: flag the quit so the
+// close is not vetoed, then ask Gio to close the window;
+// DestroyEvent runs quit() and main returns.
+func (a *App) quitFromTray() {
+	a.trayQuit.Store(true)
+	if a.w != nil {
+		a.w.Perform(system.ActionClose)
+	}
+}
+
+// toggleFromTray connects or disconnects from the tray menu.
+// Unlike toggle() it does not rely on window frames or the UI
+// busy flag, so it works while the window is hidden; the blocking
+// core calls run on their own goroutines exactly as in toggle().
+func (a *App) toggleFromTray() {
+	if a.initErr != nil || a.mgr == nil {
+		return
+	}
+	if a.mgr.Running() {
+		go func() {
+			_ = a.mgr.Stop()
+			a.clearSysProxy()
+			a.logf("Disconnected from tray")
+		}()
+		return
+	}
+	if n := a.activeNode(); n != nil {
+		a.store.Data.Cfg.ActiveNodeID = n.ID
+		_ = a.store.Save()
+	}
+	go func() {
+		if err := a.startProxy(); err != nil {
+			a.logf("Tray connect failed: %v", err)
+			return
+		}
+		a.logf("Connected from tray")
+	}()
+}
+
 func (a *App) run() {
 	var ops op.Ops
 	for {
 		switch e := a.w.Event().(type) {
+		case *app.ClosingEvent:
+			// Close request (red button, Cmd+W, ActionClose).
+			// With the menu-bar tray installed, closing just
+			// hides the window: veto the close and order the
+			// NSWindow out; the core keeps running and the
+			// window can be restored from the menu. A tray
+			// Quit sets trayQuit first, so its close falls
+			// through to DestroyEvent and quit().
+			if a.trayOK.Load() && !a.trayQuit.Load() {
+				e.Abort()
+				trayHideWindow()
+				a.logf("Window hidden to the menu bar; proxy keeps running")
+			}
 		case app.DestroyEvent:
 			a.quit()
 			return
@@ -588,6 +688,21 @@ func main() {
 		defer t.Stop()
 		for range t.C {
 			a.w.Invalidate()
+			if a.trayOK.Load() {
+				traySetStatus(a.trayStatusText(), a.trayToggleText())
+			}
+		}
+	}()
+	// Install the macOS menu-bar tray (a no-op stub elsewhere).
+	// It must run concurrently with app.Main below: creating the
+	// status item is dispatched to the main queue, which only
+	// starts turning once the NSApp run loop is up. Until setup
+	// confirms the item exists, trayOK stays false and closing
+	// the window keeps its historical quit behaviour.
+	go func() {
+		if setupTray(a) {
+			a.trayOK.Store(true)
+			a.logf("Menu bar icon installed; closing the window now hides it")
 		}
 	}()
 	go func() {
